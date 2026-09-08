@@ -5,6 +5,29 @@ function reservationMetadata(record) {
   return record?.metadata && typeof record.metadata === "object" ? record.metadata : {};
 }
 
+export function reservationPreparationFailureSummary(records = []) {
+  const failed = records.filter(record => (
+    record.status === "ManualReview"
+      && ["preparation_outcome_unknown_after_proving", "user_cancelled_preparation_before_broadcast"]
+        .includes(reservationMetadata(record).reconcile_reason)
+  ));
+  if (!failed.length) return "";
+  const kinds = new Set(failed.map(record => reservationMetadata(record).preparation_failure_kind));
+  const kind = kinds.size === 1 ? [...kinds][0] : "unknown";
+  const descriptions = {
+    cancelled: "준비 요청이 취소되어 예약이 유지되고 있습니다.",
+    timeout: "준비 요청 시간이 초과되어 예약이 유지되고 있습니다.",
+    wallet_rejected: "준비 중 지갑 요청이 거절되어 예약이 유지되고 있습니다."
+  };
+  const description = Object.hasOwn(descriptions, kind)
+    ? descriptions[kind]
+    : "준비 작업이 중단되어 예약이 유지되고 있습니다. 상세 실패 원인은 기록되지 않았습니다.";
+  const discarded = failed.every(record => reservationMetadata(record).proof_discarded === true);
+  return `${description} 이 상태는 note가 소비됐다는 뜻이 아닙니다. ${discarded
+    ? "로컬 proof는 폐기됐습니다. 아래 버튼에서 체인 상태를 확인하고 해당 작업의 note 잠금 해제를 승인하세요."
+    : "proof 폐기 여부가 확인되지 않아 자동 해제하지 않습니다. 아래 복구 조건을 확인하세요."}`;
+}
+
 export function reservationOperationKey(record = {}) {
   return String(
     record.operation_id

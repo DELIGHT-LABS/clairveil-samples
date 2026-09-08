@@ -114,6 +114,7 @@ export function depositRecoveryCanFinalizeFromTypedScan({
   hasPreparedDeposit = false,
   exactEventConfirmed = false
 } = {}) {
+  if (String(transport).toLowerCase() === "evm") return exactEventConfirmed === true;
   if (!hasPreparedDeposit) return true;
   const normalizedTransport = String(transport).toLowerCase();
   return normalizedTransport === "evm"

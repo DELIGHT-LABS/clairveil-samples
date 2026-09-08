@@ -40,6 +40,7 @@ import {
   hasSuccessfulEvmReceiptStatus,
 } from "./public/transaction-status.js";
 import { isSamePortLoopbackEndpoint } from "./public/browser-profile.js";
+import { relayWithdrawHandoffPayload } from "./public/relay-withdraw-reconciliation.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // Local CLI helpers use the sibling Clairveil Core checkout. The browser
@@ -2351,7 +2352,7 @@ async function handleApi(req, res, url) {
       const audit = await fetchJson(restUrl("/clairveil/privacy/v1/audit_config"));
       const auditMasterPubKeyHex = audit.audit_master_pubkey_hex || "";
       const material = testAuditMaterialFromConfig(auditMasterPubKeyHex) ?? await runAuditorMaterial({
-        home: localSignerHome(),
+        home: process.env.CLAIRVEIL_AUDITOR_HOME || localSignerHome(),
         key_name: "auditor",
         keyring_backend: localSignerKeyring(),
         account_prefix: config.accountPrefix
@@ -2537,7 +2538,9 @@ async function handleApi(req, res, url) {
       assertLocalTestBackendAllowed("relay withdraw");
       assertSignerMutationAllowed(req);
       const body = await readBody(req);
-      const payload = body.handoff?.payload ?? body.payload;
+      const payload = body.handoff != null
+        ? relayWithdrawHandoffPayload(body.handoff)
+        : body.payload;
       const candidateTransaction = body.handoff?.transaction ?? body.transaction;
       const relayer = localRelayerName();
       const requestedRelayer = body.relayer ?? body.from;

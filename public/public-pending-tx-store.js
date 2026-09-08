@@ -62,11 +62,16 @@ function normalizedPendingEntry(entry, { allowRecoveryPending = false } = {}) {
     throw new Error("pending transaction entry is invalid");
   }
   const normalizedStatus = status === "checking" ? "unknown" : status;
+  if (entry.evmRecoveryId != null && (!allowRecoveryPending
+    || !/^[0-9a-f]{64}$/.test(entry.evmRecoveryId))) {
+    throw new Error("pending EVM deposit recovery identity is invalid");
+  }
   return {
     txHash,
     status: normalizedStatus,
     ...(attemptId ? { attemptId } : {}),
     ...(entry?.height ? { height: String(entry.height) } : {}),
+    ...(entry.evmRecoveryId ? { evmRecoveryId: entry.evmRecoveryId } : {}),
     ...normalizedCheckTxEvidence(entry, { status: normalizedStatus, txHash })
   };
 }

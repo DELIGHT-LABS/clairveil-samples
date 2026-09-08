@@ -21,7 +21,9 @@ const htmlSource = await readFile(new URL("../public/index.html", import.meta.ur
 const cssSource = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
 test("DApp keeps the top summary focused on core chain status", () => {
-  assert.match(htmlSource, /id="protocolState"/);
+  assert.doesNotMatch(htmlSource, /id="protocolState"/);
+  assert.doesNotMatch(appSource, /renderProtocolStatus|els\.protocolState|v0\.3\.1 ready/);
+  assert.match(appSource, /client\.assertTransferProtocolConfig\(baseDenom\(\)\)/);
   assert.doesNotMatch(htmlSource, /id="reserveState"/);
   assert.doesNotMatch(htmlSource, /id="depositProofState"/);
   assert.doesNotMatch(appSource, /els\.reserveState/);
@@ -228,7 +230,8 @@ test("DApp exposes chain profiles and filters wallet connect buttons by chain", 
   assert.match(configSource, /chainProfiles: \[clairveilProfile\]/);
   assert.doesNotMatch(configSource, /^const evmProfile/m);
   assert.doesNotMatch(configSource, /^\s*evmChainId:/m);
-  assert.match(readmeSource, /EVM static profile example/);
+  assert.match(readmeSource, /\[EVM environment example\]\(\.env\.evm\.example\)/);
+  assert.match(readmeSource, /\[EVM connection guide\]\(docs\/connect-evm\.md\)/);
   assert.match(readmeSource, /const myEvmProfile = \{/);
   assert.match(readmeSource, /chainProfiles: \[clairveilProfile, myEvmProfile\]/);
   assert.match(serverSource, /const chainProfiles = dappChainProfiles\(\)/);
@@ -327,7 +330,7 @@ test("DApp uses the npm ClairveilJS browser client for public wallet and privacy
   assert.match(appSource, /clairveilBrowserClient\(\)\.decodeSelfViewDisclosure/);
   assert.match(appSource, /const checkpoint = await client\.signDirect/);
   assert.match(appSource, /client\.broadcastTxRawBytes\(checkpoint\.txRawBytes/);
-  assert.match(appSource, /clairveilBrowserClient\(\)\.waitForEvmTransaction/);
+  assert.match(appSource, /waitForPreparedEvmPrivacy\(clairveilBrowserClient\(\), txHash, reservationBinding\)/);
   assert.match(appSource, /clairveilBrowserClient\(\)\.sendEvmTransaction/);
   assert.match(appSource, /function defaultNoteScanCursor/);
   assert.match(appSource, /function noteScanRequestOptions/);
@@ -446,9 +449,11 @@ test("DApp binds prepare and broadcast reservation refreshes to the originating 
   const prepareEnd = appSource.indexOf("async function broadcastPrivacyDeposit", prepareStart);
   const prepareSource = appSource.slice(prepareStart, prepareEnd);
   assert.equal(
-    [...prepareSource.matchAll(/await refreshReservationState\(manager, \{ sessionContext \}\)/g)].length,
+    [...prepareSource.matchAll(/return finishPrivacyPreparation\(/g)].length,
     3
   );
+  assert.equal([...prepareSource.matchAll(/privacySessionContext: sessionContext/g)].length, 3);
+  assert.match(appSource, /async function finishPrivacyPreparation[\s\S]*refreshReservationState\(data.reservationManager, \{ sessionContext: data.privacySessionContext \}\)/);
 
   const broadcastStart = appSource.indexOf("async function broadcastPreparedPrivacy");
   const broadcastEnd = appSource.indexOf("function evmReceiptHasFailed", broadcastStart);
@@ -562,7 +567,7 @@ test("DApp keeps prepared reservation leases alive across wallet and relay waits
   assert.match(appSource, /reservationHeartbeatIntervalMs/);
   assert.match(appSource, /async function withPreparedReservationHeartbeat/);
   assert.match(appSource, /manager\.heartbeatLease\(reservationIDs, \{ leaseToken \}\)/);
-  assert.match(appSource, /withPreparedReservationHeartbeat\(finalData, \(\) =>/);
+  assert.match(appSource, /withPreparedReservationHeartbeat\(finalData, async \(\) =>/);
   assert.match(appSource, /const broadcast = await withPreparedReservationHeartbeat\(data/);
   assert.match(appSource, /function startRelayReservationHeartbeat/);
   assert.match(appSource, /relayReservationHeartbeatTimer = globalThis\.setInterval/);
@@ -1110,7 +1115,7 @@ test("DApp hides spendable inventory throughout protocol preflight failure and r
     const end = appSource.indexOf(nextName, start);
     const block = appSource.slice(start, end);
     assert.match(block, /state\.protocol\.ready = false;[\s\S]*renderMyKeplrNotes\(\)/);
-    assert.match(block, /renderProtocolStatus\(\);\s*renderMyKeplrNotes\(\)/);
+    assert.match(block, /renderMyKeplrNotes\(\);\s*updateAmountActionButtons\(\)/);
   }
 });
 
@@ -1152,7 +1157,7 @@ test("DApp requires prepared self-merge approval before transfer and exact-note 
   const confirmationBlock = appSource.slice(confirmationStart, confirmationEnd);
   assert.match(confirmationBlock, /withPreparedReservationHeartbeat\(data, async \(\) =>/);
   assert.match(confirmationBlock, /await requestPreparedSelfMergeConfirmation\(review\)/);
-  assert.match(confirmationBlock, /if \(!approved\) \{[\s\S]*discardPreparedReservation\(data, "user_cancelled_self_merge_before_broadcast"\)/);
+  assert.match(confirmationBlock, /if \(!approved\) \{\s*await assertPrivacyPreparationNotCancelled\(data, AbortSignal.abort\(\)\)/);
 
   const exactNoteStart = appSource.indexOf("async function createExactWithdrawNote");
   const exactNoteEnd = appSource.indexOf("function sendFromKeplr", exactNoteStart);
@@ -1274,8 +1279,8 @@ test("DApp confirms chain-bound intent details and supports self-view opt-out", 
   }
   assert.match(appSource, /function requestPreparedTransferConfirmation/);
   assert.match(appSource, /function preparedTransferChangeEffect/);
-  assert.match(appSource, /withPreparedReservationHeartbeat\(finalData, \(\) => \([\s\S]*requestPreparedTransferConfirmation/);
-  assert.match(appSource, /discardPreparedReservation\(finalData/);
+  assert.match(appSource, /withPreparedReservationHeartbeat\(finalData, async \(\) => \{\s*await assertPrivacyPreparationNotCancelled\(finalData\);\s*return requestPreparedTransferConfirmation/);
+  assert.match(appSource, /if \(!finalConfirmed\) \{\s*await assertPrivacyPreparationNotCancelled\(finalData, AbortSignal.abort\(\)\)/);
   assert.match(appSource, /const finalPreparedExpiresAtUnix = preparedTransferExpiryUnix\(finalData/);
   assert.match(appSource, /expiresAtUnix: finalPreparedExpiresAtUnix/);
   assert.match(appSource, /afterSigningBeforeBroadcast: async \(\) => \{[\s\S]*fetchLatestChainBlock\(\)[\s\S]*assertPreparedTransferFreshAtChainTime/);
@@ -1628,7 +1633,7 @@ test("DApp server restores the documented production security boundary", () => {
 
 test("DApp shows a send result confirmation before refresh side effects", () => {
   assert.match(appSource, /function showSendResult/);
-  assert.match(appSource, /title: "Send 요청됨"/);
+  assert.match(appSource, /title: "Send 제출됨"/);
   assert.match(appSource, /title: "Send 실패"/);
   assert.match(appSource, /showSendResult\(\{[\s\S]*success: true,[\s\S]*wallet: "MetaMask"/);
   assert.match(appSource, /showSendResult\(\{[\s\S]*success: true,[\s\S]*wallet: "Keplr"/);
@@ -1678,7 +1683,7 @@ test("DApp durably fences public EVM submission before the wallet boundary and t
   assert.match(adapterBlock, /attachSubmittedEvmTransactionEvidence\(error, submittedTxHash\)/);
   assert.match(appSource, /assertPrivacySessionAfterEvmSubmission\(sessionContext, normalizedTxHash\)/);
   assert.match(appSource, /function publicEvmTransactionBoundaryCallbacks[\s\S]*persistCapturedPublicTransactionAttempt/);
-  assert.match(appSource, /publicEvmTransactionBoundaryCallbacks\(sessionContext, options\.publicPendingKind\)/);
+  assert.match(appSource, /publicEvmTransactionBoundaryCallbacks\(sessionContext, options\.publicPendingKind, evmRecoveryId\)/);
 
   const sendStart = appSource.indexOf("async function sendFromKeplrUnlocked");
   const sendEnd = appSource.indexOf("async function depositFromKeplrUnlocked", sendStart);
@@ -1693,7 +1698,7 @@ test("DApp retains the early EVM deposit marker through receipt polling", () => 
 
   assert.match(depositBlock, /publicPendingKind: "deposit"/);
   assert.match(depositBlock, /submitted\.pending \|\| submitted\.unknown[\s\S]*persistCapturedPublicPendingTransaction/);
-  assert.match(depositBlock, /else if \(txHash\) \{\s*clearCapturedPublicPendingTransaction/);
+  assert.match(depositBlock, /else if \(txHash\) \{\s*persistCapturedDepositRecoveryPending/);
   assert.match(depositBlock, /evmReceiptHasFailed\(error\?\.broadcast\?\.receipt\)[\s\S]*clearCapturedPublicPendingTransaction/);
 });
 
@@ -1736,7 +1741,8 @@ test("DApp estimates EVM gas before opening MetaMask confirmation", () => {
   assert.match(appSource, /tx\.gas = bigIntToEvmQuantity\(existing > padded \? existing : padded\)/);
   assert.doesNotMatch(appSource, /existing > 0n && existing < padded/);
   assert.match(appSource, /delete tx\.gas/);
-  assert.match(appSource, /const tx = await withEstimatedEvmGas\(\{ \.\.\.transaction, from: walletAccount \}\)/);
+  assert.match(appSource, /const estimated = await withEstimatedEvmGas\(\{ \.\.\.transaction, from: walletAccount \}\)/);
+  assert.match(appSource, /await withPublicEvmNonce\(clairveilBrowserClient\(\), estimated\)/);
   assert.match(appSource, /params: \[tx\]/);
 });
 

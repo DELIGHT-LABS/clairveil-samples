@@ -12,11 +12,123 @@ The boundary is intentional:
 
 For a public node deployment, the DApp needs the static assets, ClairveilJS, public RPC/REST endpoints, and a reviewed prover. Cosmos profiles use the Core v0.4.0 canonical DepositCircuit route at `{proverUrl}/v1/prover/deposit` by default, with an optional exact canonical endpoint or local/WASM provider override. EVM profiles keep their separately configured deposit-provider contract. A DApp backend is optional.
 
+## Start here: choose a chain and configure the web
+
+Use a chain that includes the Clairveil privacy module and compatible queries, transactions, and prover contracts. You can connect to an already deployed chain or start one locally. Obtain its metadata and endpoint URLs from the chain operator. A regular Cosmos/EVM RPC endpoint alone does not provide Clairveil support.
+
+[Clairveil Core](https://github.com/DELIGHT-LABS/clairveil) contains the reusable module and a reference chain for local testing. It is one available test host; the sample can also connect to other compatible chains.
+
+### 1. Install the web dependencies
+
+The current sample uses a local ClairveilJS checkout. Place the directories beside each other:
+
+```text
+workspace/
+  clairveil-samples/   # this repository
+  clairveiljs/        # JavaScript SDK
+  clairveil/          # optional: Core reference chain and local Go helpers
+```
+
+From the samples root, install the SDK and web dependencies:
+
+```bash
+cd ..
+git clone https://github.com/DELIGHT-LABS/clairveiljs.git clairveiljs
+cd clairveiljs
+git checkout d14afbeed34441aa946adf857255067235507e7c
+npm ci
+cd ../clairveil-samples
+npm ci
+npm run build:dapp
+```
+
+If the SDK directory already exists, use that checkout instead of cloning over it. Use a reviewed SDK ref compatible with this sample; the currently checked SDK commit is `d14afbeed34441aa946adf857255067235507e7c` (package version `0.3.1`, including the Cosmos v0.4 deposit contract). Check out that ref before `npm ci` when reproducing this snapshot. Node.js 22+ and npm are recommended for these commands.
+
+### 2A. Test an already running chain
+
+Start the chain using its own repository's instructions. In samples, choose the environment example for your chain:
+
+- [Cosmos environment example](.env.cosmos.example) · [Cosmos connection guide](docs/connect-cosmos.md)
+- [EVM environment example](.env.evm.example) · [EVM connection guide](docs/connect-evm.md)
+
+```bash
+# Choose one; back up an existing .env first:
+cp .env.cosmos.example .env
+# Or: cp .env.evm.example .env
+```
+
+Edit the copied `.env` with chain ID, RPC/REST, prover, denomination/decimals, prefixes, and wallet-specific values. Then run from the samples root in a fresh shell:
+
+```bash
+set -a
+source .env
+set +a
+npm start
+```
+
+The examples default to public HTTPS endpoints with local helpers disabled. For local HTTP testing, follow the transport connection guide first. EVM local mode can automatically recover bundled public test keys during browser bootstrap; configure a compatible CLI and an isolated test home before enabling it. The EVM guide lists the required variables and limitations.
+
+Restart the server and reload the browser after environment changes. The browser reads the `config` field in the `/api/health` response; inspect `/api/config` for the generated profile. This workflow needs no JSON edits. Only use `public/dapp-config.json` when separately choosing static hosting as described later.
+
+### 2B. Start the Clairveil reference chain locally
+
+Install Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22+, and npm. Read the Core [getting-started guide](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md) for circuit generation and machine requirements; use the documentation from the same Core ref you check out.
+
+After step 1, clone Core beside the samples and run the samples' local runner:
+
+Use a fresh terminal with no previously exported `CLAIRVEIL_*`, `CLAIRVEILD_BIN`, or `CHAIN_ID` settings; do not source the route 2A `.env` for this workflow. If your shell startup files export these settings, remove those exports from this session first. Starting a child shell from the configured terminal still inherits them. The runner does not clear existing transport, endpoint, denomination, or signer overrides: stale settings can keep the web connected to the previous chain or remote prover even while the local Core chain starts.
+
+```bash
+# From clairveil-samples:
+cd ..
+git clone https://github.com/DELIGHT-LABS/clairveil.git clairveil
+cd clairveil
+# Select a published Core ref compatible with this sample before initialization.
+# Check the checked-out Core docs and SDK contract before using a newer release.
+cd ../clairveil-samples
+export CLAIRVEIL_HOME=/tmp/clairveil-dapp-local
+export CHAIN_ID=clairveil-local-2
+CLAIRVEIL_DAPP_HOST=127.0.0.1 npm run start:local
+```
+
+The runner executes `make init` in Core, which builds/installs the binaries, initializes the test accounts and audit key, and generates circuit artifacts. It then starts the reference chain, transfer/withdraw prover, samples deposit prover, and this web app. You do not need to run `make init` separately. Initial circuit generation can take time.
+
+| Service | Default address |
+| --- | --- |
+| CometBFT RPC / Cosmos REST | `http://127.0.0.1:26657` / `http://127.0.0.1:1317` |
+| Transfer/withdraw prover | `http://127.0.0.1:8080` |
+| Local Cosmos deposit prover | `http://127.0.0.1:8090` |
+| Samples web and same-origin prover proxy | `http://127.0.0.1:5173` |
+
+This mode supplies chain profiles from the server automatically. The `go.mod` file belongs to the local deposit/auditor helpers and resolves Core through `../clairveil`; static browser testing does not require Go or a local Core checkout.
+
+Each `npm run start:local` invokes initialization again and backs up an existing chain home before replacing it. To use an existing chain without reinitializing it, leave that chain/prover running and use route 2A, or the manual server configuration in [Run](#run). Stop the local stack with Ctrl+C. After a chain reset, use the web's Reset & Rescan and a fresh test session/cache rather than reusing old notes.
+
+The web may start before the transfer/withdraw prover finishes loading its artifacts. Before requesting proofs, check both prover health endpoints:
+
+```bash
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8090/healthz
+```
+
+Both should return HTTP 200. Wait for artifact loading if either is not ready. The browser's `Protocol: v0.3.1 ready` label identifies the wallet protocol contract; it is also used with the supported Core v0.4 deposit route.
+
+### 3. Run a wallet test
+
+1. Select your chain and connect Keplr or MetaMask. Check the chain ID, denomination, and displayed endpoints.
+2. Fund the transparent account. The local reference server offers Faucet; a deployed chain needs its own faucet or funded test account. Leave enough balance for network fees.
+3. Complete Setup Clairveil, then Deposit a small amount using the denomination shown beside the input. Wait for the transaction result and note scan.
+4. Transfer to a second test wallet's shielded address, scan in that wallet, and Withdraw to a transparent address.
+5. Check transaction hashes, balances, and note status after each step. Local admin audit decoding is available only when the corresponding local helper and test audit key are configured.
+
+If health fails, check endpoint connectivity, chain ID, CORS, and the required privacy query routes first. If Deposit is unavailable, check the selected profile's canonical deposit prover/provider and protocol preflight. For an unresolved transaction, reconcile its existing hash before trying another submission.
+
 ## Key Files
 
 | File | Purpose |
 | --- | --- |
-| `public/dapp-config.js` | Static chain profile list read by the browser |
+| `public/dapp-config.json` | Runtime chain profiles loaded by the statically hosted browser |
+| `public/dapp-config.js` | Source/default configuration helpers |
 | `public/app.js` | Browser UI and wallet flow |
 | `public/app.bundle.js` | Browser bundle generated by `npm run build:dapp` |
 | `server.js` | Local test helper server (faucet, local signer...) |
@@ -93,6 +205,8 @@ These routes exist only when `server.js` is running. In a public-node deployment
 The bundled prover proxy is a bounded local-development helper, not a public prover gateway. It requires both local-test mode and the explicit `CLAIRVEIL_PROVER_PROXY_ENABLED=1` flag, accepts only direct loopback callers, requires `application/json`, omits cross-origin permission, rejects redirects, bounds and validates JSON responses, and applies per-client rate plus process-wide concurrency limits. Public mode rejects the proxy flag. Public Cosmos deployments use the canonical deposit route on `CLAIRVEIL_PUBLIC_PROVER_URL` unless they set a reviewed exact Cosmos override; EVM/product-specific deployments may set their own exact deposit URL. Every remote prover boundary needs reviewed authentication, rate/quota, metadata-only logging, and retention controls.
 
 ### Browser ClairveilJS High-Level Calls
+
+For local audit decoding on either Cosmos or EVM, the `auditor` key must derive the disclosure public key returned by the chain's `audit_config`; creating an unrelated key will not decrypt existing disclosures. By default the helper uses the local signer home and keyring backend. Set `CLAIRVEIL_AUDITOR_HOME` to a separate disposable keyring home containing `auditor` when needed (for example, the matching test key already exists under another name and the keyring rejects duplicate addresses). Restart the sample server after changing this setting. The test-scalar endpoint reports `matches_audit_config`; it must be `true` before testing Decode. This does not change the chain audit configuration and remains local/admin-only. Never import production custody keys into this test helper.
 
 The DApp UI does not implement privacy preparation itself. It calls the high-level `clairveiljs/browser-dapp` API, and those calls use the selected chain profile's REST/RPC/prover/wallet APIs.
 
@@ -179,7 +293,7 @@ EVM profiles use MetaMask:
 
 Add static chain profiles to `public/dapp-config.json`, which is the exact artifact the browser loads when `/api/health` is unavailable. The checked-in static default exposes the Cosmos/Keplr profile only. To show EVM/MetaMask in a static deployment, add a complete EVM profile to that file. In server-backed mode, the browser instead uses the config embedded in `/api/health`; `/api/config` returns the same bare Web client config for diagnostics but is not the browser bootstrap source. The production verifier rejects a deployment when those two config payloads differ.
 
-EVM static profile example:
+EVM profile fields are illustrated below as JavaScript. For static hosting, put the corresponding object in `public/dapp-config.json` → `chainProfiles`, using JSON syntax (quoted keys, no `const`, `export`, comments, or references to variables). Set `activeChainProfileId` in that JSON; changing this source example alone does not update the runtime artifact.
 
 ```js
 const myEvmProfile = {
@@ -300,7 +414,7 @@ the browser issue the request.
 
 `Withdraw` scans spendable notes, plans the withdraw, requests a withdraw proof, and prepares the final Cosmos sign doc or EVM transaction. Its result UI tracks nullifier-spent evidence separately from the bound transparent-receive evidence and reports success only after both reconcile. `Relay handoff` prepares the immutable payload without broadcasting it; the application exports the v0.3.1 `schema_version`, `handoff_version`, request, and payload layers as `v2` and must deliver that JSON over its own trusted relayer transport. Before the JSON is exposed, the DApp records the relay handoff against the prepared reservation.
 
-Transfer and withdraw preparation use a ClairveilJS note reservation manager backed by IndexedDB, Web Locks, and AES-GCM encrypted state derived from the wallet privacy material. The same manager and prepared reservation are passed to Cosmos and EVM submission, and the DApp heartbeats the `ProofReady` lease while wallet or relay handoff confirmation is pending. Reserved notes are labelled and excluded from the displayed plan-available balance, while unrelated unreserved notes remain eligible for new plans. The reservation recovery panel groups linked inputs by operation and only offers `Review & replan` when no broadcast attempt or relay handoff is recorded. It refreshes the authoritative note scan, requires every reserved nullifier to be explicitly unspent, and asks the wallet owner to approve proof discard. A live owned `ProofReady` lease then moves directly to `ReplanRequired`; an expired preparation first enters `ManualReview` and records the owner-approved resolution. Restarting a localnet with a fresh genesis under the same chain ID makes old nullifiers impossible to query on the new chain. In local-test mode only, the DApp can reset previous-genesis encrypted reservation state with separate wallet-owner approval when a complete scan is empty, reserve/deposit/withdraw totals are all zero, and every active reservation has no broadcast or relay evidence. A receipt polling timeout is shown as `Unknown`, never as proof of failure; the Reconcile action checks the tx hash first and then refreshes nullifier status. A transfer whose nullifier is spent is completed only after a paginated lookup at the authoritative included height finds the matching chain event and binds the stored tx hash, output commitment, audit disclosure digest, recipient hash, amount hash, and denom. Relay reconciliation validates an included transaction against the encrypted handoff before scanning spent notes: it decodes the Cosmos `MsgWithdraw` or compares the EVM target, calldata, value, and chain ID. A spent nullifier without a successful bound transaction is persisted as operation-level manual review and blocks a replacement withdraw. A query failure leaves the reservation locked; missing or conflicting operation evidence remains blocked for manual review.
+Transfer and withdraw preparation use a ClairveilJS note reservation manager backed by IndexedDB, Web Locks, and AES-GCM encrypted state derived from the wallet privacy material. The same manager and prepared reservation are passed to Cosmos and EVM submission, and the DApp heartbeats the `ProofReady` lease while wallet or relay handoff confirmation is pending. Reserved notes are labelled and excluded from the displayed plan-available balance, while unrelated unreserved notes remain eligible for new plans. The reservation recovery panel groups linked inputs by operation and only offers `Discard proof & unlock notes` when no broadcast attempt or relay handoff is recorded. It refreshes the authoritative note scan, requires every reserved nullifier to be explicitly unspent, and asks the wallet owner to approve proof discard. A live owned `ProofReady` lease then moves directly to `ReplanRequired`; an expired preparation first enters `ManualReview` and records the owner-approved resolution. Restarting a localnet with a fresh genesis under the same chain ID makes old nullifiers impossible to query on the new chain. In local-test mode only, the DApp can reset previous-genesis encrypted reservation state with separate wallet-owner approval when a complete scan is empty, reserve/deposit/withdraw totals are all zero, and every active reservation has no broadcast or relay evidence. A receipt polling timeout is shown as `Unknown`, never as proof of failure; the Reconcile action checks the tx hash first and then refreshes nullifier status. A transfer whose nullifier is spent is completed only after a paginated lookup at the authoritative included height finds the matching chain event and binds the stored tx hash, output commitment, audit disclosure digest, recipient hash, amount hash, and denom. Relay reconciliation validates an included transaction against the encrypted handoff before scanning spent notes: it decodes the Cosmos `MsgWithdraw` or compares the EVM target, calldata, value, and chain ID. A spent nullifier without a successful bound transaction is persisted as operation-level manual review and blocks a replacement withdraw. A query failure leaves the reservation locked; missing or conflicting operation evidence remains blocked for manual review.
 
 The same-origin local relayer repeats nullifier preflight and atomically locks each canonical payload nullifier. Concurrent or replayed copies of the same payload share one submission, while any overlapping different payload is rejected. Faucet, local deposit, and relay broadcasts using the same signer account also share one account-sequence/nonce queue. An explicit nonzero Cosmos CheckTx response releases only this process-local submission gate because the node definitively rejected the transaction. Once the broadcaster has returned a valid exact tx hash, a later timeout, disconnect, or malformed status retains that hash with the account fence; a later signer request clears the fence only after an authoritative Cosmos tx query or EVM receipt query finds the transaction. An indexed Cosmos tx with a non-canonical execution code, or an EVM receipt with a non-canonical status, is returned as `included=true`, `pending=false`, `unknown=true`, and `failed=null` together with the exact hash; it is never cached or rendered as success. If the CLI fails before returning any valid hash, the process-local gate remains fail-closed but exact-hash reconciliation is impossible; such an identifier-less post-boundary result is never automatically retryable. The browser's durable reservation still follows its normal reconciliation policy.
 
@@ -315,6 +429,30 @@ If the separate private Cosmos transaction fence is corrupt, normal transaction 
 Transfer/withdraw proof requests carry an `AbortSignal`. The modal can cancel an in-flight request and retry against the same profile-pinned prover endpoint. Expiry is derived from the latest chain block time and the UI fails closed if that timestamp cannot be read.
 
 The v0.3.1 one-proof batch APIs and server proxy path are intentionally not exposed in this UI. Keep `serverFeatures.batchTransfer` false until the target chain, prover, scan recovery, wallet confirmation, and downstream E2E suite are all validated together.
+
+Preparation failures can leave linked notes in `ManualReview` even when no broadcast was recorded. The existing recovery card shows cached input notes and a bounded preparation-failure explanation when available; old records cannot recover an original error that was not saved. Use `Discard proof & unlock notes` for the existing chain-evidence and owner-approved proof-discard flow. Neither a timeout, cancellation, nor an unspent cache entry alone automatically unlocks a proof-stage reservation.
+
+If a cancelled transfer/withdraw/relay preparation returns a completed result, the DApp drops its local proof and executable artifacts and records `ManualReview` with proof-discard/no-broadcast evidence. Notes remain locked until the wallet owner uses `Discard proof & unlock notes`. Recovery scans before and after approval, rejects any broadcast/handoff evidence or spent/missing input, and atomically moves only the selected operation's linked reservations to `ReplanRequired`. Other operations and cached notes are not deleted. A provider rejection without a result does not confirm remote proof deletion; use the same explicit recovery review, not an automatic timeout unlock. Failed persistence keeps the reservation locked. Proof cancellation is disabled once wallet submission or relay handoff begins; it cannot retract a submitted transaction or exported payload.
+
+### EVM deposit confirmation and recovery
+
+Private EVM transfer/withdraw submissions use the same account lock and nonce preflight, before entering the SDK's durable broadcast boundary. The SDK receives its unchanged prepared transaction; the wallet request receives the explicit nonce. A preflight failure therefore creates no new broadcast attempt. This does not retroactively resolve an older hashless `ManualReview` operation: an advanced account nonce alone does not bind the failed wallet request to that reservation, and a zero-value helper input is not an exception to recovery checks.
+
+Public EVM send/deposit requests query the configured RPC's latest and pending account nonces under the account lock and supply the pending nonce explicitly to the wallet. An already-used explicit nonce or a failed nonce preflight stops before the wallet request and creates no new pending marker. This reduces stale-wallet nonce errors but cannot stop a different application from submitting concurrently. After the wallet boundary, only explicit rejection (`4001`) automatically clears that exact hashless attempt; a `nonce too low` error may also describe a retry of an included transaction and remains unresolved. For an older hashless attempt, inspect wallet history and chain transactions, then use `Clear unresolved wallet attempt` and confirm the named send/deposit attempt. This clears only that reviewed attempt, preserves other transaction records and note reservations, and does not cancel or resubmit a transaction.
+
+Before opening MetaMask, the sample saves the original SDK-prepared deposit transaction (including its verification metadata), sender, and encrypted-output recovery fields in a separate AES-GCM store scoped to the chain/profile/account. The public pending marker contains only the opaque recovery-record ID, attempt ID, and transaction hash/status—not calldata or note data. Storage failure prevents submission. Reconnect the same wallet and use `Setup Clairveil` to unlock this record, then `Reconcile deposit tx`; reconciliation never resubmits the transaction.
+
+Submission confirmation and reconciliation both pass the original transaction and sender to the SDK. The sample explicitly uses one canonical block confirmation unless the SDK client has a configured finality policy; this is inclusion evidence, not irreversible finality. Missing receipts or failed identity/event/finality checks keep the pending fence. Inclusion alone does not complete a deposit: its owned encrypted note must also be recovered. Older hash-only entries use the exact canonical `PrivacyDeposit` event, sender, configured contract, commitment, amount/denom, and scanned note height; RPC calldata is never substituted for a missing original preparation. If the note is absent, keep the fence and use `Reset & Rescan`, then reconcile again.
+
+### Cosmos-EVM transfer recovery
+
+For Cosmos-EVM transfer reconciliation, the wallet's Ethereum transaction hash can differ from the host-chain privacy event's transaction hash. The sample uses the profile's configured host RPC and EVM RPC to verify the successful receipt, matching canonical block/host chain ID, inclusion and hash of the Cosmos transaction bytes, and its unambiguous `ethereum_tx.ethereumTxHash` link. The indexed privacy event must exactly match an included event before its output commitment and audit digest are passed to the SDK with the original EVM hash for comparison against the prepared reservation. Same-height matches alone, missing indexing, ambiguous multi-EVM transactions, and mismatched outputs never complete an operation. These host-chain endpoints and hash-link events are required for this Cosmos-EVM recovery path; they are not assumed to exist on every EVM chain.
+
+After cancellation is checked and disabled, but before wallet submission, reserved EVM operations save their original transaction and sender in the chain/profile/account-scoped `evm-private` encrypted recovery store. Transfer reconciliation binds this artifact to every reservation's `tx_bytes_hash`, reruns SDK transaction/privacy-receipt/finality verification, and supplies the actual successful receipt and verification results alongside the output evidence. Missing verification is not evidence of a wrong recipient. Use **Note reservations → Reconcile** for records with recoverable preparations. Older records without the original artifact remain unresolved; neither RPC calldata nor literal `true` flags may substitute for the missing verification. Do not resubmit the transfer or unlock consumed notes.
+
+### Direct EVM withdraw validation
+
+Withdraw payloads use the host chain's bech32 recipient even when the user enters an EVM address. The sample converts the user's intended EVM recipient using the configured account prefix before passing `expectedRecipient` to the SDK; it never takes the expected value from the payload being checked. Wrong recipients and prefixes remain rejected. After submission, direct withdraw reconciliation reruns SDK verification from the encrypted original request, then derives the actual recipient and amount from the configured contract's unique `PrivacyWithdraw` receipt event. All input-spent and reservation evidence must still match before the operation succeeds. This does not release an older reservation left by a preparation failure.
 
 ## Disclosure Mode
 
@@ -348,6 +486,15 @@ npm run start:local
 
 If `26657`, `1317`, `8080`, `8090`, or `5173` is already in use, stop the existing process first. Press `Ctrl+C` in this terminal to stop the local stack. The runner builds the example-only deposit prover under `CLAIRVEIL_HOME`, binds it to `127.0.0.1:8090`, and configures the DApp proxy automatically.
 
+For an existing chain, use the [Cosmos](docs/connect-cosmos.md) or [EVM](docs/connect-evm.md) connection guide. For manual reference-node startup below, use a clean shell as described in step 2B. Before starting the node, allow the local web origin in `$CLAIRVEIL_HOME/config/config.toml`:
+
+```toml
+# In the existing [rpc] section, replace the cors_allowed_origins value:
+cors_allowed_origins = ["http://127.0.0.1:5173"]
+```
+
+Apply this edit **after `make init`** (which recreates the home) and before `clairveild start`. If you change the web port, update the allowed origin too. The REST flag below also enables CORS; it is for isolated local testing only, not public deployment. Server health success alone does not prove browser CORS access.
+
 Start a local Clairveil node:
 
 ```bash
@@ -356,10 +503,12 @@ export CLAIRVEIL_HOME=/tmp/clairveil-dapp-local
 export CHAIN_ID=clairveil-local-2
 make init
 source "$CLAIRVEIL_HOME/clairveil.env"
+# Apply the [rpc] CORS edit above before continuing.
 clairveild start \
   --home "$CLAIRVEIL_HOME" \
   --minimum-gas-prices 0uclair \
   --api.enable \
+  --api.enabled-unsafe-cors \
   --api.address tcp://127.0.0.1:1317
 ```
 
@@ -371,7 +520,7 @@ npm install
 CLAIRVEIL_PROVER_PROXY_ENABLED=1 \
 CLAIRVEIL_PROVER_URL=http://127.0.0.1:8080 \
 CLAIRVEIL_COSMOS_DEPOSIT_PROVER_URL=http://127.0.0.1:8090 \
-CLAIRVEIL_HOME=/tmp/clairveil-dapp-local CHAIN_ID=clairveil-local-2 npm start -- --host 0.0.0.0
+CLAIRVEIL_HOME=/tmp/clairveil-dapp-local CHAIN_ID=clairveil-local-2 npm start -- --host 127.0.0.1
 ```
 
 This manual form assumes compatible transfer/withdraw and canonical Cosmos
@@ -398,6 +547,8 @@ npm start
 In this mode, local signer, faucet, local CLI deposit, and auditor test-secret routes are disabled. Wallet-driven send/deposit/transfer/withdraw/scan/decode still run in the browser through ClairveilJS.
 
 ## Tests
+
+`.github/workflows/test.yml` runs web/SDK contract checks and Go helper tests on pull requests and pushes to `main`. It checks out pinned SDK/Core commits beside the samples. This is automated validation only: it does not deploy the web, start a persistent chain, or run wallet E2E tests.
 
 ```bash
 npm run check:dapp

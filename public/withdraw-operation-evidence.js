@@ -1,6 +1,7 @@
 import { sha256Hex } from "clairveiljs/browser-crypto";
 import { bech32AddressToEvm, evmAddressToBech32 } from "clairveiljs/evm";
 import { hashAmount } from "clairveiljs/reservation";
+import { AbiCoder, id } from "ethers";
 
 import { cosmosWithdrawMessage } from "./relay-withdraw-reconciliation.js";
 
@@ -30,6 +31,45 @@ function requiredText(value, label) {
   const text = String(value || "").trim();
   if (!text) throw new Error(`${label} is required`);
   return text;
+}
+
+// Normalize the user's intended recipient, not the payload's claimed recipient.
+// Privacy payloads retain the host chain's bech32 representation on EVM too.
+export function withdrawPayloadRecipient(recipient, { transport, accountPrefix } = {}) {
+  const intended = requiredText(recipient, "withdraw recipient");
+  if (transport === "evm" && /^0x[0-9a-f]{40}$/i.test(intended)) {
+    return evmAddressToBech32(intended, requiredText(accountPrefix, "account prefix"));
+  }
+  return intended;
+}
+
+export function evmWithdrawOperationEvidence({ receipt, txHash, contractAddress, accountPrefix } = {}) {
+  const expectedHash = normalizedHex(txHash, "withdraw transaction hash", { bytes: 32 });
+  if (receipt?.status !== "0x1"
+    || normalizedHex(receipt.transactionHash, "receipt transaction hash", { bytes: 32 }) !== expectedHash) {
+    throw new Error("Withdraw receipt is not the requested successful transaction");
+  }
+  const contract = normalizedHex(contractAddress, "privacy contract", { bytes: 20 });
+  const topic = id("PrivacyWithdraw(address,address,address,string)").toLowerCase();
+  const logs = (receipt.logs || []).filter(log => String(log.address || "").replace(/^0x/i, "").toLowerCase() === contract
+    && String(log.topics?.[0] || "").toLowerCase() === topic);
+  if (logs.length !== 1 || logs[0].removed === true || logs[0].topics.length !== 4) {
+    throw new Error("Expected one canonical PrivacyWithdraw event");
+  }
+  const log = logs[0];
+  const recipientTopic = normalizedHex(log.topics[3], "withdraw recipient topic", { bytes: 32 });
+  if (!recipientTopic.startsWith("0".repeat(24))) throw new Error("Invalid withdraw recipient topic padding");
+  const recipient = evmAddressToBech32(`0x${recipientTopic.slice(24)}`, accountPrefix);
+  const coder = AbiCoder.defaultAbiCoder();
+  const [amount] = coder.decode(["string"], log.data);
+  if (coder.encode(["string"], [amount]).toLowerCase() !== String(log.data).toLowerCase()) {
+    throw new Error("Non-canonical PrivacyWithdraw amount data");
+  }
+  const coin = parseCosmosCoin(amount);
+  return { txHash: expectedHash,
+    recipientHash: hashTransparentCosmosRecipient(recipient, { accountPrefix }),
+    amount: coin.amount, amountHash: hashAmount(coin.denom, coin.amount), denom: coin.denom,
+    batchItemIndex: 0, batchItemIndexKnown: false };
 }
 
 export function hashTransparentCosmosRecipient(recipient, { accountPrefix } = {}) {

@@ -1,0 +1,67 @@
+name: Samples checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: clairveil-samples
+    steps:
+      - name: Check out samples
+        uses: actions/checkout@v4
+        with:
+          path: clairveil-samples
+          persist-credentials: false
+
+      # Sibling paths match package.json and the local Go replace directive.
+      # Update these immutable refs alongside the documented compatibility set.
+      - name: Check out ClairveilJS
+        uses: actions/checkout@v4
+        with:
+          repository: DELIGHT-LABS/clairveiljs
+          ref: d14afbeed34441aa946adf857255067235507e7c
+          path: clairveiljs
+          persist-credentials: false
+
+      - name: Check out Core v0.4.0
+        uses: actions/checkout@v4
+        with:
+          repository: DELIGHT-LABS/clairveil
+          ref: ca85b02708fdd75259d4d2ee2d671c21198cec69
+          path: clairveil
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            clairveil-samples/package-lock.json
+            clairveiljs/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.13'
+          cache-dependency-path: clairveil-samples/go.sum
+
+      - name: Install dependencies
+        run: |
+          npm --prefix ../clairveiljs ci --ignore-scripts
+          npm ci --ignore-scripts
+
+      - name: Check web and SDK contracts
+        run: npm run verify:release
+
+      - name: Test local Go helpers
+        run: go test ./deposit-prover ./tools/auditor-material

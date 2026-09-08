@@ -10,11 +10,123 @@ Clairveil DApp은 브라우저에서 Keplr 또는 MetaMask를 연결해 Clairvei
 
 Public node 환경에서는 static DApp + ClairveilJS + 공개 RPC/REST + 검토된 prover가 필요합니다. Cosmos profile은 기본적으로 `{proverUrl}/v1/prover/deposit`의 Core v0.4.0 canonical DepositCircuit route를 사용하고 exact canonical endpoint 또는 local/WASM provider로 override할 수 있습니다. EVM profile은 별도로 설정한 기존 deposit provider contract를 유지합니다. DApp backend 자체는 필수가 아닙니다.
 
+## 시작하기: 체인을 준비하고 웹 설정하기
+
+Clairveil privacy module과 호환되는 query, transaction, prover contract를 제공하는 체인을 사용합니다. 이미 배포된 체인에 연결하거나 직접 체인을 띄울 수 있습니다. 체인 운영자가 제공한 메타데이터와 endpoint 주소를 준비하세요. 일반 Cosmos/EVM RPC만으로는 Clairveil 기능을 사용할 수 없습니다.
+
+[Clairveil Core 저장소](https://github.com/DELIGHT-LABS/clairveil)는 재사용 가능한 module과 로컬 테스트용 reference chain을 제공합니다. 이 체인을 테스트에 사용하거나, 같은 contract를 제공하는 다른 체인을 사용할 수 있습니다.
+
+### 1. 웹 의존성 설치
+
+현재 샘플은 로컬 ClairveilJS checkout을 참조합니다. 디렉터리를 다음처럼 나란히 둡니다.
+
+```text
+workspace/
+  clairveil-samples/   # 이 저장소
+  clairveiljs/        # JavaScript SDK
+  clairveil/          # 선택: Core reference chain과 로컬 Go helper
+```
+
+샘플 루트에서 SDK와 웹 의존성을 설치합니다.
+
+```bash
+cd ..
+git clone https://github.com/DELIGHT-LABS/clairveiljs.git clairveiljs
+cd clairveiljs
+git checkout d14afbeed34441aa946adf857255067235507e7c
+npm ci
+cd ../clairveil-samples
+npm ci
+npm run build:dapp
+```
+
+SDK 디렉터리가 이미 있으면 다시 clone하지 말고 해당 checkout을 사용하세요. 샘플과 호환되는 검토된 SDK ref를 선택해야 합니다. 현재 검증한 SDK commit은 `d14afbeed34441aa946adf857255067235507e7c`입니다(package version `0.3.1`, Cosmos v0.4 deposit contract 포함). 이 snapshot을 재현하려면 `npm ci` 전에 해당 ref를 checkout하세요. 위 명령에는 Node.js 22+와 npm을 권장합니다.
+
+### 2A. 이미 실행 중인 체인 테스트
+
+체인은 해당 체인 저장소의 방법대로 실행합니다. Samples에서는 체인에 맞는 환경변수 예제를 선택하세요.
+
+- [Cosmos 환경변수 예제](.env.cosmos.example) · [Cosmos 연결 안내](docs/connect-cosmos-kr.md)
+- [EVM 환경변수 예제](.env.evm.example) · [EVM 연결 안내](docs/connect-evm-kr.md)
+
+```bash
+# 둘 중 하나만 선택 (기존 .env가 있으면 먼저 백업):
+cp .env.cosmos.example .env
+# 또는: cp .env.evm.example .env
+```
+
+복사한 `.env`에 체인 ID, RPC/REST, prover, denom/decimals, prefix 및 wallet별 설정을 채웁니다. 그런 다음 새 shell의 samples 루트에서 실행합니다.
+
+```bash
+set -a
+source .env
+set +a
+npm start
+```
+
+예제는 공개 HTTPS endpoint와 local helper 비활성화를 기본으로 합니다. 로컬 HTTP 테스트는 transport별 연결 안내를 먼저 따르세요. EVM local 모드는 browser bootstrap 중 공개 test key를 자동 복구할 수 있으므로 활성화 전에 호환 CLI와 격리된 test home을 설정해야 합니다. 필수 변수와 제한사항은 EVM 가이드에 명시했습니다.
+
+환경변수 변경 후 서버를 재시작하고 브라우저를 새로고침하세요. 브라우저는 `/api/health` 응답의 `config` 필드를 읽고, `/api/config`에서 생성된 profile을 확인할 수 있습니다. 이 방식에서는 JSON을 수정하지 않습니다. 정적 호스팅을 별도로 선택한 경우에만 아래 static configuration 안내의 `public/dapp-config.json`을 사용합니다.
+
+### 2B. Clairveil reference chain을 로컬에서 실행
+
+Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22+, npm을 준비하세요. Circuit 생성과 장비 요구사항은 Core [시작 안내](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md)를 참고하되 실제 checkout한 Core ref의 문서를 기준으로 사용하세요.
+
+1단계를 마친 뒤 samples 옆에 Core를 clone하고 samples의 로컬 runner를 실행합니다.
+
+이전에 export한 `CLAIRVEIL_*`, `CLAIRVEILD_BIN`, `CHAIN_ID` 설정이 없는 새 터미널을 사용하고, 이 실행 방식에서는 2A의 `.env`를 source하지 마세요. 셸 시작 파일에서 해당 변수를 export한다면 현재 세션에서 먼저 해제하세요. 설정된 터미널에서 자식 셸만 실행하면 기존 환경변수를 그대로 상속합니다. Runner는 기존 transport, endpoint, 단위, signer override를 초기화하지 않으므로, 값이 남아 있으면 로컬 Core 체인이 시작되어도 웹은 이전 체인이나 원격 prover에 계속 연결될 수 있습니다.
+
+```bash
+# clairveil-samples에서:
+cd ..
+git clone https://github.com/DELIGHT-LABS/clairveil.git clairveil
+cd clairveil
+# 초기화 전에 이 샘플과 호환되는 공개된 Core ref를 선택합니다.
+# 새 릴리스 사용 전 checkout한 Core 문서와 SDK contract를 확인하세요.
+cd ../clairveil-samples
+export CLAIRVEIL_HOME=/tmp/clairveil-dapp-local
+export CHAIN_ID=clairveil-local-2
+CLAIRVEIL_DAPP_HOST=127.0.0.1 npm run start:local
+```
+
+Runner가 Core에서 `make init`을 호출합니다. 이 과정에서 binary build/install, test account와 audit key 초기화, circuit artifact 생성을 수행합니다. 이어 reference chain, transfer/withdraw prover, samples deposit prover, 이 웹앱을 띄웁니다. 별도로 `make init`을 먼저 실행할 필요는 없습니다. 최초 circuit 생성은 시간이 걸릴 수 있습니다.
+
+| 서비스 | 기본 주소 |
+| --- | --- |
+| CometBFT RPC / Cosmos REST | `http://127.0.0.1:26657` / `http://127.0.0.1:1317` |
+| Transfer/withdraw prover | `http://127.0.0.1:8080` |
+| Local Cosmos deposit prover | `http://127.0.0.1:8090` |
+| Samples 웹 및 same-origin prover proxy | `http://127.0.0.1:5173` |
+
+이 모드는 서버에서 chain profile을 자동으로 제공합니다. `go.mod`는 local deposit/auditor helper용이며 `../clairveil`의 Core를 참조합니다. 정적 웹으로 체인을 테스트할 때는 Go나 로컬 Core checkout이 필요하지 않습니다.
+
+`npm run start:local`은 실행할 때마다 초기화를 호출하며, 기존 chain home을 백업한 뒤 새로 만듭니다. 기존 체인을 초기화 없이 사용하려면 체인/prover를 유지한 채 2A 방식 또는 아래 수동 서버 설정으로 웹만 실행하세요. 로컬 stack 종료는 Ctrl+C입니다. 체인을 reset했다면 예전 note를 재사용하지 말고 웹의 Reset & Rescan과 새로운 test session/cache를 사용하세요.
+
+Transfer/withdraw prover가 artifact를 로딩하는 동안 웹이 먼저 열릴 수 있습니다. Proof 요청 전 두 prover의 health를 확인하세요.
+
+```bash
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8090/healthz
+```
+
+둘 다 HTTP 200이어야 합니다. 아직 준비되지 않았다면 artifact 로딩 완료를 기다리세요. 브라우저의 `Protocol: v0.3.1 ready`는 wallet protocol contract 표시이며, 지원하는 Core v0.4 deposit route에서도 이 표기를 사용합니다.
+
+### 3. Wallet 테스트 순서
+
+1. 체인을 선택하고 Keplr 또는 MetaMask를 연결합니다. Chain ID, denom, endpoint가 맞는지 확인합니다.
+2. Transparent account에 테스트 자금을 넣습니다. 로컬 reference server에서는 Faucet을 사용할 수 있고, 배포 체인에서는 해당 체인의 faucet 또는 자금이 있는 테스트 계정이 필요합니다. Network fee 잔액도 남겨두세요.
+3. Setup Clairveil을 완료한 뒤 입력창 옆 단위로 소액 Deposit합니다. Transaction 결과와 note scan 완료를 확인합니다.
+4. 다른 테스트 wallet의 shielded address로 Transfer하고, 수신 wallet에서 Scan한 뒤 transparent address로 Withdraw합니다.
+5. 단계마다 tx hash, 잔액, note 상태를 확인합니다. Local admin audit decode는 local helper와 test audit key가 설정된 환경에서만 사용할 수 있습니다.
+
+Health 실패 시 endpoint 연결, chain ID, CORS, privacy query route부터 확인하세요. Deposit이 비활성화돼 있으면 선택한 profile의 canonical deposit prover/provider와 protocol preflight를 확인합니다. 미해결 transaction이 있으면 해당 hash를 먼저 reconcile하고 다음 제출을 진행하세요.
+
 ## 파일 구조
 
 | 파일 | 역할 |
 | --- | --- |
-| `public/dapp-config.js` | 브라우저가 읽는 static chain profile 목록 |
+| `public/dapp-config.json` | 정적 호스팅 시 브라우저가 읽는 runtime chain profile |
+| `public/dapp-config.js` | Source/default configuration helper |
 | `public/app.js` | DApp UI와 wallet event 흐름 |
 | `public/app.bundle.js` | `npm run build:dapp`로 생성되는 브라우저 번들 |
 | `server.js` | local test helper 서버 (faucet, local signer...) |
@@ -114,6 +226,8 @@ DApp은 사용자 wallet privacy flow를 서버로 보내지 않습니다. `depo
 
 ### Browser ClairveilJS high-level calls
 
+Cosmos/EVM 모두 로컬 audit decode에는 체인의 `audit_config` 공개키와 일치하는 disclosure 공개키가 파생되는 `auditor` 키가 필요합니다. 무관한 새 키로는 기존 disclosure를 복호화할 수 없습니다. 기본값은 local signer home과 keyring backend이며, 필요하면 `auditor`가 있는 별도 일회성 keyring home을 `CLAIRVEIL_AUDITOR_HOME`으로 지정합니다. 예를 들어 맞는 테스트 키가 이미 다른 이름으로 있어 키링이 동일 주소 중복 등록을 거부할 때 사용할 수 있습니다. 설정 변경 후 샘플 서버를 재시작하고 test-scalar 응답의 `matches_audit_config=true`를 확인한 뒤 Decode를 테스트합니다. 체인의 audit 설정은 변경하지 않으며 기존 local/admin 제한도 유지합니다. 운영 custody 키는 이 테스트 helper에 가져오지 마세요.
+
 DApp UI는 privacy 준비 로직을 직접 구현하지 않고 `clairveiljs/browser-dapp`의 high-level API를 호출합니다. 아래 call들이 선택된 chain profile의 REST/RPC/prover/wallet API를 사용합니다.
 
 | ClairveilJS call | 사용하는 네트워크/API |
@@ -208,6 +322,8 @@ EVM profile에서만 사용합니다.
 ### Static/public DApp
 
 Static chain profile은 `/api/health`를 사용할 수 없을 때 browser가 실제로 읽는 `public/dapp-config.json`에 추가합니다. 현재 commit된 static 기본값은 Cosmos/Keplr profile만 노출합니다. Static 배포에서 EVM/MetaMask를 보이게 하려면 그 파일에 완전한 EVM profile을 추가하세요. Server-backed mode에서는 browser가 `/api/health`에 포함된 config를 사용합니다. `/api/config`은 진단용으로 같은 bare Web client config를 반환하지만 bootstrap source는 아니며, production verifier는 두 config payload가 다르면 배포를 거부합니다.
+
+아래는 필드를 설명하기 위한 JavaScript 예시입니다. 정적 호스팅에서는 대응하는 object를 `public/dapp-config.json`의 `chainProfiles`에 JSON 문법으로 넣으세요(따옴표로 감싼 key, `const`/`export`/주석/변수 참조 제외). `activeChainProfileId`도 JSON에서 설정합니다. 아래 Cosmos의 `keplrChainInfo(...)`는 `public/dapp-config.js` 내부 helper를 보여주는 것이므로 JSON에는 기존 파일처럼 완성된 wallet metadata object를 넣으세요. Source 예시만 수정해서는 runtime artifact가 바뀌지 않습니다.
 
 Cosmos 예시:
 
@@ -414,7 +530,7 @@ Prepared payload 이후의 최종 확인에는 authoritative chain time으로 �
 
 `Relay handoff` mode는 브로드캐스트하지 않고 immutable relay payload를 JSON으로 만듭니다. 내보내는 envelope는 0.3.1의 `schema_version`, `handoff_version`, request, payload 네 layer를 모두 `v2`로 고정합니다. 실제 전달은 product-defined trusted relayer transport가 담당해야 하며, EVM relayer는 candidate transaction을 그대로 신뢰하지 말고 payload에서 재구성하거나 byte-for-byte 검증해야 합니다. DApp은 JSON을 화면에 노출하기 전에 prepared reservation에 relay handoff를 기록합니다.
 
-Transfer/withdraw prepare는 wallet privacy material에서 파생한 키로 AES-GCM 암호화한 IndexedDB + Web Locks 기반 ClairveilJS note reservation manager를 사용합니다. Cosmos/EVM submit에도 같은 manager와 prepared reservation을 전달합니다. 예약된 note는 화면에 표시하고 plan 가능 잔액에서 제외하지만, 관계없는 미예약 note는 새 plan에 계속 사용할 수 있습니다. Reservation recovery panel은 연결된 input을 operation별로 묶고 broadcast 시도나 relay handoff 기록이 없는 경우에만 `Review & replan`을 제공합니다. 최신 authoritative note scan에서 모든 reserved nullifier가 명시적으로 unspent인지 확인하고 wallet owner에게 proof 폐기 승인을 받습니다. 현재 tab이 소유한 live `ProofReady` lease는 `ReplanRequired`로 이동하고, 만료된 preparation은 먼저 `ManualReview`로 격리한 뒤 owner-approved resolution을 기록합니다. 동일 chain ID로 localnet을 fresh genesis로 다시 시작한 경우에는 이전 nullifier를 새 chain에서 조회할 수 없습니다. Local-test mode에서만 full scan이 비어 있고 reserve, total deposit, total withdraw가 모두 0이며 모든 active reservation에 broadcast/relay evidence가 없을 때 wallet owner의 별도 승인으로 이전-genesis encrypted reservation state를 초기화합니다. Receipt polling timeout은 실패가 아니라 `Unknown`으로 표시합니다. `Reconcile`은 tx hash를 먼저 확인하고 포함된 Cosmos `MsgWithdraw` 전체 또는 EVM target/calldata/value/chain ID를 암호화된 handoff와 결합한 뒤에만 nullifier scan을 수행합니다. 성공한 bound transaction 없이 nullifier만 spent이면 operation-level `ManualReview`로 영속화해 대체 withdraw를 차단합니다. Spent transfer evidence는 authoritative 포함 height부터 event를 끝까지 pagination해 tx hash와 nullifier를 함께 확인합니다. 조회 실패나 binding 불일치는 reservation을 그대로 잠급니다. `tx absent/failed`와 `nullifier unspent`가 특정 height에서 모두 명시적으로 확인된 경우에만 새 plan을 허용합니다.
+Transfer/withdraw prepare는 wallet privacy material에서 파생한 키로 AES-GCM 암호화한 IndexedDB + Web Locks 기반 ClairveilJS note reservation manager를 사용합니다. Cosmos/EVM submit에도 같은 manager와 prepared reservation을 전달합니다. 예약된 note는 화면에 표시하고 plan 가능 잔액에서 제외하지만, 관계없는 미예약 note는 새 plan에 계속 사용할 수 있습니다. Reservation recovery panel은 연결된 input을 operation별로 묶고 broadcast 시도나 relay handoff 기록이 없는 경우에만 `Discard proof & unlock notes`을 제공합니다. 최신 authoritative note scan에서 모든 reserved nullifier가 명시적으로 unspent인지 확인하고 wallet owner에게 proof 폐기 승인을 받습니다. 현재 tab이 소유한 live `ProofReady` lease는 `ReplanRequired`로 이동하고, 만료된 preparation은 먼저 `ManualReview`로 격리한 뒤 owner-approved resolution을 기록합니다. 동일 chain ID로 localnet을 fresh genesis로 다시 시작한 경우에는 이전 nullifier를 새 chain에서 조회할 수 없습니다. Local-test mode에서만 full scan이 비어 있고 reserve, total deposit, total withdraw가 모두 0이며 모든 active reservation에 broadcast/relay evidence가 없을 때 wallet owner의 별도 승인으로 이전-genesis encrypted reservation state를 초기화합니다. Receipt polling timeout은 실패가 아니라 `Unknown`으로 표시합니다. `Reconcile`은 tx hash를 먼저 확인하고 포함된 Cosmos `MsgWithdraw` 전체 또는 EVM target/calldata/value/chain ID를 암호화된 handoff와 결합한 뒤에만 nullifier scan을 수행합니다. 성공한 bound transaction 없이 nullifier만 spent이면 operation-level `ManualReview`로 영속화해 대체 withdraw를 차단합니다. Spent transfer evidence는 authoritative 포함 height부터 event를 끝까지 pagination해 tx hash와 nullifier를 함께 확인합니다. 조회 실패나 binding 불일치는 reservation을 그대로 잠급니다. `tx absent/failed`와 `nullifier unspent`가 특정 height에서 모두 명시적으로 확인된 경우에만 새 plan을 허용합니다.
 
 Same-origin local relayer도 nullifier preflight를 다시 수행하고 canonical payload nullifier 각각을 process 안에서 원자적으로 잠급니다. 같은 payload의 동시 요청이나 replay는 한 번의 제출 결과를 공유하고, 하나라도 겹치는 다른 payload는 거부합니다. 같은 signer account를 쓰는 faucet, local deposit, relay broadcast도 하나의 account-sequence/nonce queue를 공유합니다. Cosmos가 nonzero CheckTx를 명시적으로 반환한 경우에는 node 접수 거부가 확정됐으므로 이 process-local submission gate만 해제합니다. Broadcaster가 유효한 exact tx hash를 반환한 뒤 timeout, disconnect, malformed status가 발생하면 그 hash를 account fence와 함께 유지하며, 이후 signer 요청이 authoritative Cosmos tx query 또는 EVM receipt query로 해당 transaction을 찾은 경우에만 fence를 해제합니다. Indexed Cosmos tx의 execution code 또는 EVM receipt status가 canonical하지 않으면 exact hash와 함께 `included=true`, `pending=false`, `unknown=true`, `failed=null`로 반환하며 success로 cache하거나 표시하지 않습니다. CLI가 유효한 hash를 반환하기 전에 실패하면 process-local gate는 fail-closed 상태를 유지하지만 exact-hash reconciliation은 불가능하며, 이런 identifier 없는 post-boundary 결과는 자동 retry 대상이 아닙니다. Browser의 durable reservation은 기존 reconciliation 정책을 그대로 따릅니다.
 
@@ -429,6 +545,30 @@ Disclosure Review는 현재 event 외에도 임의 tx hash 또는 붙여넣은 `
 Transfer/withdraw proof 요청에는 `AbortSignal`이 전달됩니다. Modal에서 진행 중인 proof를 취소하고 같은 profile-pinned prover endpoint로 재시도할 수 있습니다. 만료 시각은 latest chain block time을 기준으로 계산하며 timestamp 조회에 실패하면 fail-closed합니다.
 
 0.3.1의 one-proof batch API와 proxy path는 이 UI에서 의도적으로 노출하지 않습니다. Target chain, prover, scan recovery, wallet confirmation, downstream E2E를 함께 검증하기 전까지 `serverFeatures.batchTransfer`는 `false`로 유지하세요.
+
+준비 실패는 broadcast 기록이 없어도 연결된 note를 `ManualReview`에 남길 수 있습니다. 기존 복구 카드에서 cache의 입력 note와 기록된 준비 실패 분류를 확인할 수 있으며, 과거에 저장되지 않은 원래 오류는 복원할 수 없습니다. `Discard proof & unlock notes`은 기존 체인 증거 확인 및 지갑 소유자의 proof 폐기 승인 절차를 사용합니다. Timeout·취소·cache의 미사용 표시만으로는 proof 단계 예약을 자동 해제하지 않습니다.
+
+취소된 transfer/withdraw/relay 준비에서 완성된 결과가 반환되면, DApp은 로컬 proof와 제출용 데이터를 제거하고 proof 폐기·미제출 증거와 함께 `ManualReview`를 기록합니다. 지갑 소유자가 `Discard proof & unlock notes`에서 승인할 때까지 note 잠금을 유지합니다. 승인 전후에 체인을 scan하고 broadcast/handoff 기록 또는 소비됐거나 확인되지 않은 입력이 있으면 차단합니다. 선택한 작업에 묶인 예약만 원자적으로 `ReplanRequired`로 전환하며 다른 작업이나 note cache는 삭제하지 않습니다. Provider가 결과 없이 실패하면 원격 proof 삭제를 단정하지 않고 같은 명시적 복구 검토를 사용합니다. Timeout으로 자동 해제하지 않으며 저장 실패 시 잠금을 유지합니다. 지갑 제출 또는 relay handoff가 시작되면 proof 취소 버튼을 비활성화하며, 이미 제출된 거래나 외부로 전달된 payload를 철회하지는 못합니다.
+
+### EVM deposit 확인과 복구
+
+EVM private transfer/withdraw도 같은 account lock과 nonce preflight를 사용하며 SDK의 durable broadcast 경계에 들어가기 전에 확인합니다. SDK에는 준비한 transaction을 변경 없이 전달하고 실제 지갑 요청에 nonce를 명시합니다. 따라서 preflight 실패 시 새 broadcast attempt를 만들지 않습니다. 이 변경으로 기존 hashless `ManualReview` operation이 자동 복구되지는 않습니다. Account nonce가 증가했다는 사실만으로 실패한 지갑 요청과 해당 예약이 연결되지는 않으며, 0-value helper 입력도 복구 검증의 예외가 아닙니다.
+
+EVM public send/deposit는 account lock 안에서 설정된 RPC의 latest/pending account nonce를 조회하고 pending nonce를 지갑 요청에 명시합니다. 명시된 nonce가 이미 사용됐거나 nonce preflight가 실패하면 지갑 호출 전에 중단하며 새 pending marker를 만들지 않습니다. 지갑의 오래된 nonce 사용을 줄이지만 다른 앱의 동시 제출까지 막지는 못합니다. 지갑 호출 이후에는 명시적 거절(`4001`)만 해당 hashless attempt를 자동 해제합니다. `nonce too low`는 이미 포함된 거래의 재시도 오류일 수도 있어 미확정 상태로 유지합니다. 기존 hashless attempt는 지갑 내역과 체인 거래를 확인한 뒤 `Clear unresolved wallet attempt`에서 표시된 send/deposit 요청을 확인하여 해제합니다. 확인한 요청만 지우며 다른 거래 기록과 note reservation은 유지하고, 거래 취소나 재전송은 하지 않습니다.
+
+MetaMask를 열기 전에 SDK가 준비한 원본 deposit transaction(검증 metadata 포함), sender, 암호화 output 복구 필드를 chain/profile/account별 별도 AES-GCM store에 저장합니다. 공개 pending marker에는 불투명한 복구 record ID, attempt ID, tx hash/status만 기록하며 calldata나 note 데이터는 넣지 않습니다. 저장 실패 시 제출하지 않습니다. 같은 지갑을 연결하고 `Setup Clairveil`로 복구 record를 해제한 뒤 `Reconcile deposit tx`를 실행합니다. Reconcile은 거래를 재전송하지 않습니다.
+
+제출 직후 확인과 Reconcile 모두 원본 transaction과 sender를 SDK에 전달합니다. SDK client에 별도 finality policy가 없다면 샘플은 canonical block 1회 confirmation을 명시적으로 사용합니다. 이는 포함 증거이며 되돌릴 수 없는 finality 보장은 아닙니다. Receipt가 없거나 identity/event/finality 검증이 실패하면 pending fence를 유지합니다. Deposit은 포함 확인만으로 완료되지 않으며 소유한 encrypted note 복구까지 완료해야 합니다. 과거 hash-only record는 exact canonical `PrivacyDeposit` event, sender, 설정된 contract, commitment, amount/denom, scan note height를 대조합니다. 조회한 RPC calldata를 원래 준비 정보로 대입하지 않습니다. Note가 없으면 fence를 유지하고 `Reset & Rescan` 후 다시 reconcile합니다.
+
+### Cosmos-EVM transfer 복구
+
+Cosmos-EVM transfer에서는 지갑의 Ethereum tx hash와 host-chain privacy event의 tx hash가 다를 수 있습니다. 샘플은 profile에 설정된 host RPC/EVM RPC로 성공 receipt, 동일 canonical block과 host chain ID, Cosmos transaction 원문 해시·블록 포함 여부, 모호하지 않은 `ethereum_tx.ethereumTxHash` 연결을 검증합니다. Index의 privacy event가 포함된 원본 event와 정확히 일치할 때만 output commitment와 audit digest를 원래 EVM hash와 함께 SDK에 전달하여 준비 당시 reservation과 비교합니다. 높이만 같거나 index가 아직 없거나 여러 EVM 거래로 연결이 모호하거나 출력이 다르면 완료 처리하지 않습니다. 이 Cosmos-EVM 복구 경로에는 해당 host-chain endpoint와 hash 연결 event가 필요하며, 모든 EVM 체인에 존재한다고 가정하지 않습니다.
+
+취소 여부를 확인하고 취소 버튼을 비활성화한 뒤, 지갑 제출 전에 reserved EVM operation의 원본 transaction과 sender를 chain/profile/account별 `evm-private` 암호화 복구 store에 저장합니다. Transfer reconciliation은 이 원본을 모든 reservation의 `tx_bytes_hash`와 대조하고 SDK의 transaction/privacy receipt/finality 검증을 다시 수행한 뒤, 실제 성공 receipt와 검증 결과를 output evidence에 함께 전달합니다. 검증 누락은 수신자가 잘못됐다는 증거가 아닙니다. 원본을 복구할 수 있는 기록은 **Note reservations → Reconcile**을 사용합니다. 원본을 저장하지 않은 과거 기록은 미해결로 유지하며, RPC calldata나 임의의 `true` flag로 누락된 검증을 대신하지 않습니다. Transfer 재전송이나 이미 소비된 note 잠금 해제는 하지 않습니다.
+
+### Direct EVM withdraw 검증
+
+사용자가 EVM 주소를 입력해도 withdraw payload의 recipient는 host chain의 bech32 주소입니다. 샘플은 사용자가 의도한 EVM 수신자를 설정된 account prefix로 변환하여 SDK의 `expectedRecipient`로 전달하며, 검증 대상 payload에서 기대값을 가져오지 않습니다. 다른 수신자와 잘못된 prefix는 계속 거부합니다. 제출 후 direct withdraw reconciliation은 암호화된 원본 요청으로 SDK 검증을 다시 수행하고, 설정된 contract의 유일한 `PrivacyWithdraw` receipt event에서 실제 수신자와 금액을 도출합니다. 입력 소비와 예약 증거가 모두 일치해야 operation이 성공합니다. 이 변경은 준비 실패로 남은 기존 예약을 해제하지 않습니다.
 
 ## Disclosure mode
 
@@ -464,6 +604,15 @@ npm run start:local
 
 이미 `26657`, `1317`, `8080`, `8090`, `5173` 포트를 쓰고 있다면 기존 프로세스를 먼저 종료한 뒤 실행하세요. 종료는 이 터미널에서 `Ctrl+C`를 누르면 됩니다. runner는 example 전용 deposit prover를 `CLAIRVEIL_HOME` 아래에 build하고 `127.0.0.1:8090`에 bind한 뒤 DApp proxy를 자동으로 설정합니다.
 
+이미 실행 중인 체인은 [Cosmos](docs/connect-cosmos-kr.md) 또는 [EVM](docs/connect-evm-kr.md) 연결 안내를 따르세요. 아래 reference node 수동 실행은 2B에서 안내한 깨끗한 셸을 사용하세요. 노드 시작 전에 `$CLAIRVEIL_HOME/config/config.toml`에서 로컬 웹 origin을 허용합니다.
+
+```toml
+# 기존 [rpc] 섹션의 cors_allowed_origins 값을 교체:
+cors_allowed_origins = ["http://127.0.0.1:5173"]
+```
+
+Home을 다시 생성하는 **`make init` 이후**, `clairveild start` 이전에 수정하세요. 웹 포트를 바꾸면 허용 origin도 변경해야 합니다. 아래 REST 플래그 역시 CORS를 활성화하며, 공개 배포가 아닌 격리된 로컬 테스트 전용입니다. 서버 health 성공만으로 브라우저 CORS 접근이 보장되지는 않습니다.
+
 로컬 Clairveil node:
 
 ```bash
@@ -472,10 +621,12 @@ export CLAIRVEIL_HOME=/tmp/clairveil-dapp-local
 export CHAIN_ID=clairveil-local-2
 make init
 source "$CLAIRVEIL_HOME/clairveil.env"
+# 계속하기 전에 위 [rpc] CORS 설정을 적용하세요.
 clairveild start \
   --home "$CLAIRVEIL_HOME" \
   --minimum-gas-prices 0uclair \
   --api.enable \
+  --api.enabled-unsafe-cors \
   --api.address tcp://127.0.0.1:1317
 ```
 
@@ -487,7 +638,7 @@ npm install
 CLAIRVEIL_PROVER_PROXY_ENABLED=1 \
 CLAIRVEIL_PROVER_URL=http://127.0.0.1:8080 \
 CLAIRVEIL_COSMOS_DEPOSIT_PROVER_URL=http://127.0.0.1:8090 \
-CLAIRVEIL_HOME=/tmp/clairveil-dapp-local CHAIN_ID=clairveil-local-2 npm start -- --host 0.0.0.0
+CLAIRVEIL_HOME=/tmp/clairveil-dapp-local CHAIN_ID=clairveil-local-2 npm start -- --host 127.0.0.1
 ```
 
 이 수동 실행은 호환되는 transfer/withdraw prover와 canonical Cosmos deposit
@@ -500,13 +651,7 @@ stack을 build하고 실행하려면 `npm run start:local`을 권장합니다.
 http://127.0.0.1:5173
 ```
 
-같은 네트워크의 다른 기기:
-
-```text
-http://192.168.0.10:5173
-```
-
-다른 기기에서 wallet까지 테스트하려면 RPC/REST/prover URL도 그 기기에서 접근 가능한 주소여야 합니다.
+위 명령은 같은 컴퓨터의 loopback 테스트용입니다. 다른 기기나 공개 배포는 transport별 연결 가이드의 HTTPS endpoint 설정을 따르세요.
 
 ## Public node mode
 
@@ -537,6 +682,8 @@ connect wallet
 ```
 
 ## 테스트
+
+`.github/workflows/test.yml`은 PR과 `main` push에서 웹/SDK contract 검사 및 Go helper 테스트를 실행합니다. 고정된 SDK/Core commit을 samples 옆에 checkout합니다. 자동 검증 전용이며 웹 배포, 상시 체인 실행, 지갑 E2E 테스트는 수행하지 않습니다.
 
 ```bash
 npm run check:dapp

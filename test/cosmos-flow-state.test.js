@@ -163,6 +163,12 @@ test("prepared Cosmos deposit scan recovery requires prior exact event confirmat
     transport: "evm",
     hasPreparedDeposit: true,
     exactEventConfirmed: false
+  }), false);
+  assert.equal(depositRecoveryCanFinalizeFromTypedScan({
+    transport: "evm", hasPreparedDeposit: false, exactEventConfirmed: false
+  }), false);
+  assert.equal(depositRecoveryCanFinalizeFromTypedScan({
+    transport: "evm", hasPreparedDeposit: true, exactEventConfirmed: true
   }), true);
   assert.equal(depositRecoveryCanFinalizeFromTypedScan({
     transport: "",

@@ -3,6 +3,13 @@ import {
   validateClairveilWebClientConfig
 } from "clairveiljs/browser-dapp";
 import { bech32AddressToEvm } from "clairveiljs/evm";
+import { waitForPublicEvmSend } from "./evm-public-send.js";
+import { withPublicEvmNonce } from "./evm-wallet-nonce.js";
+import { findEvmTransferOperationEvent, verifiedEvmOperationEvidence } from "./evm-operation-event.js";
+import {
+  loadEvmDepositRecovery, saveEvmDepositRecovery, waitForPreparedEvmPrivacy,
+  waitForLegacyEvmDeposit, recoveredLegacyEvmDepositNote
+} from "./evm-deposit-recovery.js";
 import { derivePrivacyMaterial } from "clairveiljs/crypto";
 import {
   decodeAuditDisclosureFromEvent,
@@ -112,6 +119,7 @@ import {
 } from "./relay-withdraw-reconciliation.js";
 import {
   assessReservationRecovery,
+  reservationPreparationFailureSummary,
   canReconcileReservationState,
   canResetStaleLocalGenesisReservations,
   groupReservationOperations,
@@ -132,7 +140,7 @@ import {
   resolveNoteAssetDenoms,
   resolvedNoteAssetDenom
 } from "./note-asset-inventory.js";
-import { cosmosWithdrawOperationEvidence } from "./withdraw-operation-evidence.js";
+import { cosmosWithdrawOperationEvidence, evmWithdrawOperationEvidence, withdrawPayloadRecipient } from "./withdraw-operation-evidence.js";
 import {
   hasFailedEvmReceiptStatus,
   hasSuccessfulEvmReceiptStatus
@@ -1068,7 +1076,7 @@ function newPublicTransactionAttemptId() {
   return bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
 }
 
-function persistCapturedPublicTransactionAttempt(context, kind) {
+function persistCapturedPublicTransactionAttempt(context, kind, evmRecoveryId = "") {
   const identity = context?.publicPendingIdentity;
   if (!identity?.key || !globalThis.localStorage) {
     throw new Error("Durable public transaction recovery storage is unavailable");
@@ -1076,7 +1084,7 @@ function persistCapturedPublicTransactionAttempt(context, kind) {
   assertNoCapturedPublicPendingTransaction(context, kind);
   const attemptId = newPublicTransactionAttemptId();
   const existing = loadPublicPendingTxState(globalThis.localStorage, identity.key, identity);
-  const entry = { attemptId, status: "attempting" };
+  const entry = { attemptId, status: "attempting", ...(evmRecoveryId ? { evmRecoveryId } : {}) };
   savePublicPendingTxState(globalThis.localStorage, identity.key, {
     ...identity,
     ...publicPendingEntriesWith(existing, kind, entry)
@@ -1094,7 +1102,7 @@ function persistCapturedPublicTransactionAttempt(context, kind) {
   return attemptId;
 }
 
-function clearCapturedPublicTransactionAttempt(context, kind, attemptId) {
+function clearCapturedPublicTransactionAttempt(context, kind, attemptId, { reviewed = false } = {}) {
   const identity = context?.publicPendingIdentity;
   if (!identity?.key || !globalThis.localStorage) return false;
   const existing = loadPublicPendingTxState(globalThis.localStorage, identity.key, identity);
@@ -1107,12 +1115,30 @@ function clearCapturedPublicTransactionAttempt(context, kind, attemptId) {
     ...identity,
     ...publicPendingEntriesWith(existing, kind, null)
   });
+  if (privacySessionIsCurrent(context)) {
+    if (kind === "send") {
+      state.keplr.sendHash = "";
+      state.keplr.sendStatus = reviewed ? "idle" : "failed";
+    } else {
+      state.keplr.depositHash = "";
+      state.keplr.depositHeight = "";
+      state.keplr.depositPrepared = null;
+      state.keplr.depositExactEventConfirmed = false;
+      state.keplr.depositRecoveryStatus = reviewed ? "idle" : "failed";
+      state.keplr.depositRecoveryMessage = reviewed
+        ? "Wallet attempt cleared after owner review · this does not cancel a transaction"
+        : "Wallet request rejected · no transaction submitted by this attempt";
+      state.keplr.depositStageKey = reviewed ? "idle" : "failed-before-broadcast";
+      state.keplr.depositStage = state.keplr.depositRecoveryMessage;
+    }
+    renderKeplr();
+  }
   return true;
 }
 
-function publicEvmTransactionBoundaryCallbacks(context, kind) {
+function publicEvmTransactionBoundaryCallbacks(context, kind, evmRecoveryId = "") {
   return {
-    onTransactionAttempt: () => persistCapturedPublicTransactionAttempt(context, kind),
+    onTransactionAttempt: () => persistCapturedPublicTransactionAttempt(context, kind, evmRecoveryId),
     onTransactionHash: (txHash, attemptId) => persistCapturedPublicPendingTransaction(
       context,
       kind,
@@ -1171,6 +1197,7 @@ function persistCapturedPublicPendingTransaction(context, kind, txHash, attemptI
     const entry = {
       txHash,
       status: "unknown",
+      ...(previous?.evmRecoveryId ? { evmRecoveryId: previous.evmRecoveryId } : {}),
       ...(attemptId || previous?.attemptId ? { attemptId: attemptId || previous.attemptId } : {}),
       ...(evidence || {})
     };
@@ -1218,6 +1245,7 @@ function persistCapturedDepositRecoveryPending(context, txHash, height = "") {
   const entry = {
     txHash,
     status: "recovery-pending",
+    ...(previous?.evmRecoveryId ? { evmRecoveryId: previous.evmRecoveryId } : {}),
     ...(previous?.attemptId ? { attemptId: previous.attemptId } : {}),
     ...(height ? { height: String(height) } : {})
   };
@@ -1246,9 +1274,13 @@ async function clearPublicPendingTransactions() {
     renderKeplr();
     return;
   }
+  const reviewedPending = clearingCorruptState ? null : loadPublicPendingTxState(storage, identity.key, identity);
+  const reviewedKind = ["send", "deposit"].find(kind => reviewedPending?.[kind]?.status === "attempting"
+    && !reviewedPending[kind].txHash);
+  if (!clearingCorruptState && !reviewedKind) return;
   const warning = clearingCorruptState
     ? "Only the public send/deposit recovery record will be cleared. The separate private Cosmos transaction fence is never removed by this action. Continue only after checking wallet history and chain transactions?"
-    : "The wallet request may have submitted a transaction without returning its hash. Clear this attempt only after checking wallet history for the account. Continue?";
+    : `The wallet request may have submitted a transaction without returning its hash. Clear only this ${reviewedKind} attempt after checking wallet history and chain transactions for the account. This does not cancel an approved transaction. Other transaction records and note reservations will not be cleared. Continue?`;
   if (!window.confirm(warning)) return;
   const sessionContext = privacySessionSnapshot();
   try {
@@ -1258,7 +1290,8 @@ async function clearPublicPendingTransactions() {
         error.code = "PUBLIC_PENDING_STATE_CHANGED";
         throw error;
       }
-      storage.removeItem(identity.key);
+      if (clearingCorruptState) storage.removeItem(identity.key);
+      else clearCapturedPublicTransactionAttempt(sessionContext, reviewedKind, reviewedPending[reviewedKind].attemptId, { reviewed: true });
     });
     assertPrivacySession(sessionContext);
   } catch (error) {
@@ -1267,6 +1300,11 @@ async function clearPublicPendingTransactions() {
       renderKeplr();
     }
     throw error;
+  }
+  if (!clearingCorruptState) {
+    hydratePublicPendingTransactions();
+    renderKeplr();
+    return;
   }
   state.keplr.publicPendingStateError = "";
   state.keplr.sendHash = "";
@@ -1571,6 +1609,22 @@ async function currentOperationStore() {
   return operationStorePromise;
 }
 
+async function currentEvmDepositStore(context, purpose = "evm-deposit") {
+  assertPrivacySession(context);
+  const identity = operationStoreIdentity();
+  if (!identity) return null;
+  const store = await EncryptedLocalStorageOperationStore.open({
+    storage: globalThis.localStorage,
+    locks: globalThis.navigator?.locks,
+    requireLocks: true,
+    key: `${purpose}:${identity.key}`,
+    namespace: `${identity.namespace}:${purpose}`,
+    keyMaterial: base64ToBytes(state.keplr.rootSignatureBase64)
+  });
+  assertPrivacySession(context);
+  return store;
+}
+
 async function persistRelayWithdrawRecovery(next = state.relayWithdraw, {
   store = null,
   identity = null,
@@ -1793,6 +1847,69 @@ async function discardPreparedReservation(data, reason = "user_cancelled_before_
   assertPrivacySession(sessionContext);
 }
 
+async function assertPrivacyPreparationNotCancelled(data, signal = data?.preparationSignal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Proof 준비를 취소했습니다. 취소된 결과는 제출하지 않습니다.");
+  error.name = "AbortError";
+  error.code = "PROVER_CANCELLED";
+  error.rpcInvoked = false;
+  error.broadcastAbortedBeforeRpc = true;
+  if (data) {
+    error.preparedPrivacyData = data;
+    data.preparationSignal = signal;
+    // Cancellation discards this result, but only owner-approved recovery may
+    // make its linked notes available again.
+    data.proof = null;
+    data.payload = null;
+    data.message = null;
+    data.signDoc = null;
+    data.transaction = null;
+    try {
+      const sessionContext = data.privacySessionContext;
+      assertPrivacySession(sessionContext);
+      const manager = await currentReservationManager();
+      assertPrivacySession(sessionContext);
+      if (manager !== data.reservationManager) throw stalePrivacySessionError(sessionContext);
+      await manager.markManualReview(preparedReservationIDs(data), {
+        leaseToken: data.reservation?.lease_token || data.reservation?.reservations?.[0]?.lease_token || "",
+        error: "user_cancelled_preparation_before_broadcast",
+        metadata: {
+          reconcile_reason: "user_cancelled_preparation_before_broadcast",
+          preparation_failure_kind: "cancelled",
+          preparation_failure_status: "ProofReady",
+          proof_discarded: true,
+          no_broadcast_attempt: true
+        }
+      });
+    } catch (discardError) {
+      // Persistence failure must keep the reservation locked, never resume submission.
+      error.reservationDiscardError = discardError;
+    }
+  }
+  throw error;
+}
+
+async function finishPrivacyPreparation(data) {
+  // Also handles a provider that returns a result after ignoring cancellation.
+  await assertPrivacyPreparationNotCancelled(data);
+  try {
+    await refreshReservationState(data.reservationManager, { sessionContext: data.privacySessionContext });
+  } finally {
+    await assertPrivacyPreparationNotCancelled(data);
+  }
+  assertPrivacySession(data.privacySessionContext);
+  return data;
+}
+
+async function beginPreparedPrivacySubmission(data) {
+  await assertPrivacyPreparationNotCancelled(data);
+  // From here the wallet/handoff owns the outcome. A proof-cancel button cannot
+  // retract an eth_sendTransaction request or an exported relay payload.
+  if (data?.preparationSignal && data.preparationSignal === activeProofSignal()) {
+    els.cancelTransferFlow.disabled = true;
+  }
+}
+
 function stopRelayReservationHeartbeat(expectedGeneration = null) {
   if (expectedGeneration !== null && expectedGeneration !== relayReservationHeartbeatGeneration) {
     return false;
@@ -1940,19 +2057,27 @@ function renderReservationRecovery() {
     appendReservationRecoveryFact(facts, "Broadcast", assessment.broadcastAttempted ? "Attempt recorded" : "Not attempted");
     appendReservationRecoveryFact(facts, "Lease", reservationLeaseLabel(assessment));
     appendReservationRecoveryFact(facts, "Recovery", assessment.action === "review-replan" ? "Evidence check available" : "Locked");
+    const linkedIDs = new Set(assessment.reservationIDs);
+    const linkedNotes = state.keplr.notes.filter(note => (
+      linkedIDs.has(reservationForDisplayedNote(note)?.reservation_id)
+    ));
+    appendReservationRecoveryFact(facts, "Cached input notes", linkedNotes.length
+      ? linkedNotes.map(note => `${displayedNoteAmount(note)} · ${shorten(note.nullifier, 12, 10)}`).join("; ")
+      : "Not in the current cache · chain verification required");
 
     const action = document.createElement("div");
     action.className = "reservation-recovery-action";
     const reason = document.createElement("p");
     const button = document.createElement("button");
-    reason.textContent = assessment.reason;
+    reason.textContent = [reservationPreparationFailureSummary(operation.records), assessment.reason]
+      .filter(Boolean).join(" ");
     button.type = "button";
     button.className = "secondary-button";
     button.dataset.recoverReservationOperation = assessment.operationKey;
     button.textContent = state.reservations.recoveringOperationKey === assessment.operationKey
       ? "Checking…"
       : assessment.action === "review-replan"
-        ? "Review & replan"
+        ? "Discard proof & unlock notes"
         : assessment.action === "reconcile"
           ? "Use Reconcile"
           : assessment.action === "relay-reconcile"
@@ -1961,6 +2086,7 @@ function renderReservationRecovery() {
               ? "Lease active"
               : "Unavailable";
     button.disabled = assessment.action !== "review-replan"
+      || valueMovingActionGate.active
       || Boolean(state.reservations.recoveringOperationKey);
     button.title = assessment.reason;
     action.append(reason, button);
@@ -2163,6 +2289,49 @@ function authoritativeTransactionHeight(check = {}) {
 async function operationEventForReservations(records, notesByLookupKey) {
   const txHash = commonReservationTransactionHash(records);
   if (!txHash) return { complete: true, event: null };
+  if (activeChainProfile()?.transport === "evm"
+    && records.every(record => record.kind === "withdraw")) {
+    const sessionContext = privacySessionSnapshot();
+    const verified = await verifiedEvmOperationEvidence({
+      client: clairveilBrowserClient(),
+      store: await currentEvmDepositStore(sessionContext, "evm-private"),
+      records, sender: state.wallet.account, txHash,
+      evidence: { txHash: normalizedHex(txHash) }
+    });
+    assertPrivacySession(sessionContext);
+    if (!verified) return { complete: false, event: null };
+    const output = evmWithdrawOperationEvidence({
+      receipt: verified.txResult.receipt, txHash,
+      contractAddress: activeChainProfile().evmPrivacyPrecompileAddress,
+      accountPrefix: accountPrefix()
+    });
+    return { complete: true, event: null, operationSuccessEvidence: { ...verified, ...output } };
+  }
+  if (activeChainProfile()?.transport === "evm"
+    && records.every(record => ["transfer", "self_merge"].includes(record.kind))) {
+    const profile = activeChainProfile();
+    const rpc = browserRpcUrl(profile).replace(/\/$/, "");
+    if (!rpc) throw new Error("Cosmos-EVM operation recovery requires the configured host-chain RPC");
+    const lookup = await findEvmTransferOperationEvent({
+      client: clairveilBrowserClient(), txHash,
+      contractAddress: profile.evmPrivacyPrecompileAddress, chainId: profile.chainId,
+      fetchPage: options => clairveilBrowserClient().fetchPrivacyEvents(options),
+      fetchCosmosTx: hash => fetchBoundedJson(`${rpc}/tx?hash=0x${hash}`, { label: "EVM host transaction lookup" }),
+      fetchCosmosBlock: height => fetchBoundedJson(`${rpc}/block?height=${height}`, { label: "EVM host block lookup" }),
+      predicate: event => transferEventMatchesOperation(event, records, notesByLookupKey)
+    });
+    const sessionContext = privacySessionSnapshot();
+    const operationSuccessEvidence = lookup.event
+      ? await verifiedEvmOperationEvidence({
+          client: clairveilBrowserClient(),
+          store: await currentEvmDepositStore(sessionContext, "evm-private"),
+          records, sender: state.wallet.account, txHash,
+          evidence: operationEvidenceFromEvent(records, lookup.event, txHash)
+        })
+      : null;
+    assertPrivacySession(sessionContext);
+    return { ...lookup, complete: lookup.complete && Boolean(operationSuccessEvidence), operationSuccessEvidence };
+  }
   const local = operationEventForOperation(records, notesByLookupKey, txHash);
   if (local?.event_type === "shielded_transfer") {
     return {
@@ -2229,9 +2398,9 @@ function operationEvidenceWithReservationTransactionIdentity(records, txHash, ev
   return { ...operationEvidence, ...transactionIdentity };
 }
 
-function operationEvidenceFromEvent(records, event) {
+function operationEvidenceFromEvent(records, event, txHash = event?.tx_hash_hex) {
   const first = records[0];
-  return operationEvidenceWithReservationTransactionIdentity(records, event?.tx_hash_hex, {
+  return operationEvidenceWithReservationTransactionIdentity(records, txHash, {
     outputCommitment: normalizedHex(eventAttribute(event, "commitment_1")),
     auditDisclosureDigest: normalizedHex(eventAttribute(event, "audit_disclosure_digest")),
     recipientHash: first.expected_recipient_hash,
@@ -2536,7 +2705,6 @@ const els = {
   leafCount: $("#leafCount"),
   chainId: $("#chainId"),
   restState: $("#restState"),
-  protocolState: $("#protocolState"),
   accountSelect: $("#accountSelect"),
   transparentAddress: $("#transparentAddress"),
   shieldedAddress: $("#shieldedAddress"),
@@ -2744,8 +2912,8 @@ function toast(message) {
 function showSendResult({ success, wallet, txHash, error }) {
   if (success) {
     showNotice({
-      title: "Send 요청됨",
-      message: `${wallet} send가 제출되었습니다.\nTx: ${shorten(txHash, 14, 12)}`
+      title: "Send 제출됨",
+      message: `${wallet} send가 제출되었습니다. 체인 포함 여부를 확인 중입니다.\nTx: ${shorten(txHash, 14, 12)}`
     });
     return;
   }
@@ -3118,17 +3286,19 @@ function requestPreparedSelfMergeConfirmation(review) {
 async function confirmPreparedSelfMerge(data, review) {
   const sessionContext = data?.privacySessionContext || privacySessionSnapshot();
   return withPreparedReservationHeartbeat(data, async () => {
+    await assertPrivacyPreparationNotCancelled(data);
     const approved = await requestPreparedSelfMergeConfirmation(review);
     assertPrivacySession(sessionContext);
     if (!approved) {
-      await discardPreparedReservation(data, "user_cancelled_self_merge_before_broadcast");
-      assertPrivacySession(sessionContext);
+      await assertPrivacyPreparationNotCancelled(data, AbortSignal.abort());
     }
     return approved;
   });
 }
 
 function cancelTransferFlow() {
+  // Escape and backdrop clicks must obey the same boundary as the button.
+  if (transferFlowState.running && els.cancelTransferFlow.disabled) return;
   if (transferFlowState.running && transferFlowState.controller) {
     transferFlowState.controller.abort();
     els.cancelTransferFlow.disabled = true;
@@ -3141,6 +3311,11 @@ function cancelTransferFlow() {
 
 function updateTransferFlow(activeKey, stateText, leadText) {
   transferFlowState.running = true;
+  if (activeKey === "zero" && transferFlowState.controller
+    && !transferFlowState.controller.signal.aborted) {
+    els.cancelTransferFlow.disabled = false;
+    els.cancelTransferFlow.textContent = "취소";
+  }
   els.transferSteps.hidden = false;
   els.transferSuccessPanel.hidden = true;
   els.transferFailurePanel.hidden = true;
@@ -3931,12 +4106,10 @@ function selectNoteScanEndpoint(endpoint) {
   state.protocol.ready = false;
   state.protocol.error = "";
   renderNoteScanEndpoint();
-  renderProtocolStatus();
   renderMyKeplrNotes();
   updateAmountActionButtons();
   refreshProtocolStatus().catch(error => {
     state.protocol.error = browserDataLoadErrorMessage(error);
-    renderProtocolStatus();
     renderMyKeplrNotes();
   });
 }
@@ -4593,6 +4766,7 @@ async function setRelayWithdrawHandoff(prepared) {
   if (!store || !identity) {
     throw new Error("Encrypted operation recovery store is not available");
   }
+  await beginPreparedPrivacySubmission(prepared);
   const handoff = createRelayWithdrawHandoff({
     profileId: activeChainProfile()?.id || "",
     transport: activeChainProfile()?.transport || "cosmos",
@@ -5154,16 +5328,6 @@ function renderHealth(data) {
     shieldedAddressBookPromiseScope = "";
     renderVisibleAddressSuggestions();
   });
-  renderProtocolStatus();
-}
-
-function renderProtocolStatus() {
-  if (!els.protocolState) return;
-  if (state.protocol.ready) {
-    els.protocolState.textContent = "v0.3.1 ready";
-    return;
-  }
-  els.protocolState.textContent = state.protocol.error ? "Unavailable" : "Checking";
 }
 
 function canonicalEvmChainId(value) {
@@ -5204,7 +5368,6 @@ async function requirePrivacyPreparePreflight(sessionContext, { allowUninitializ
   state.protocol.ready = false;
   state.protocol.reserve = null;
   state.protocol.error = "";
-  renderProtocolStatus();
   renderMyKeplrNotes();
   updateAmountActionButtons();
   try {
@@ -5217,7 +5380,6 @@ async function requirePrivacyPreparePreflight(sessionContext, { allowUninitializ
     }
     state.protocol.ready = true;
     state.protocol.reserve = result.reserve;
-    renderProtocolStatus();
     renderMyKeplrNotes();
     updateAmountActionButtons();
     return result;
@@ -5227,7 +5389,6 @@ async function requirePrivacyPreparePreflight(sessionContext, { allowUninitializ
       state.protocol.ready = false;
       state.protocol.reserve = null;
       state.protocol.error = browserDataLoadErrorMessage(error);
-      renderProtocolStatus();
       renderMyKeplrNotes();
       updateAmountActionButtons();
     }
@@ -5244,7 +5405,6 @@ async function refreshProtocolStatus({ allowUninitializedTree = false } = {}) {
   state.protocol.ready = false;
   state.protocol.reserve = null;
   state.protocol.error = "";
-  renderProtocolStatus();
   renderMyKeplrNotes();
   try {
     const { reserve } = await fullPrivacyProtocolPreflight(sessionContext, { allowUninitializedTree });
@@ -5265,7 +5425,6 @@ async function refreshProtocolStatus({ allowUninitializedTree = false } = {}) {
     }
     state.protocol.error = browserDataLoadErrorMessage(error);
   }
-  renderProtocolStatus();
   renderMyKeplrNotes();
   updateAmountActionButtons();
 }
@@ -6883,25 +7042,41 @@ async function submitEvmTransaction(transaction, options = {}) {
     onTransactionAttempt,
     onTransactionHash,
     onTransactionRejected,
+    accountTransactionLockHeld = false,
     ...submissionOptions
   } = options;
-  assertPrivacySession(sessionContext);
-  const txHash = await clairveilBrowserClient().sendEvmTransaction({
-    wallet: evmWalletAdapter(sessionContext, {
-      onTransactionAttempt,
-      onTransactionHash,
-      onTransactionRejected
-    }),
-    transaction,
-    ...submissionOptions
-  });
-  const normalizedTxHash = normalizeEvmTxHash(txHash);
-  assertPrivacySessionAfterEvmSubmission(sessionContext, normalizedTxHash);
-  return normalizedTxHash;
+  const execute = async () => {
+    assertPrivacySession(sessionContext);
+    const walletAccount = state.wallet.account;
+    if (transaction.from && normalizedHex(transaction.from) !== normalizedHex(walletAccount)) {
+      throw new Error("Prepared EVM sender does not match the connected wallet");
+    }
+    // Run before the SDK records a broadcast attempt, including private
+    // transfers/withdrawals. Keep its prepared transaction binding unchanged:
+    // the wallet adapter applies the nonce only to the external wallet request.
+    const prepared = await withPublicEvmNonce(clairveilBrowserClient(), {
+      ...transaction, from: walletAccount
+    });
+    assertPrivacySession(sessionContext);
+    const txHash = await clairveilBrowserClient().sendEvmTransaction({
+      wallet: evmWalletAdapter(sessionContext, {
+        onTransactionAttempt,
+        onTransactionHash,
+        onTransactionRejected,
+        preparedNonce: prepared.nonce
+      }),
+      transaction,
+      ...submissionOptions
+    });
+    const normalizedTxHash = normalizeEvmTxHash(txHash);
+    assertPrivacySessionAfterEvmSubmission(sessionContext, normalizedTxHash);
+    return normalizedTxHash;
+  };
+  return accountTransactionLockHeld ? execute() : withAccountTransactionLock(sessionContext, execute);
 }
 
 async function waitForEvmTransaction(txHash, label = "EVM transaction", reservationBinding = {}) {
-  const broadcast = await clairveilBrowserClient().waitForEvmTransaction(txHash);
+  const broadcast = await waitForPreparedEvmPrivacy(clairveilBrowserClient(), txHash, reservationBinding);
   if (!broadcast?.receipt) {
     const manager = reservationBinding.reservationManager;
     const reservationIDs = preparedReservationIDs({ reservation: reservationBinding.reservation });
@@ -6930,25 +7105,34 @@ async function sendEvmTransaction(transaction, {
   waitForReceipt = false,
   label = "EVM transaction",
   reservationBinding = {},
+  publicSend = false,
   sessionContext = privacySessionSnapshot(),
+  accountTransactionLockHeld = false,
   onTransactionAttempt,
   onTransactionHash,
   onTransactionRejected
 } = {}) {
+  const sender = state.wallet.account;
   const txHash = await submitEvmTransaction(transaction, {
     ...reservationBinding,
     sessionContext,
+    accountTransactionLockHeld,
     onTransactionAttempt,
     onTransactionHash,
     onTransactionRejected
   });
   assertPrivacySessionAfterEvmSubmission(sessionContext, txHash);
+  const waitForResult = () => publicSend
+    ? waitForPublicEvmSend(clairveilBrowserClient(), txHash)
+    : waitForEvmTransaction(txHash, label, {
+        ...reservationBinding, privacyTransaction: transaction, sender
+      });
   if (waitForReceipt) {
-    const broadcast = await waitForEvmTransaction(txHash, label, reservationBinding);
+    const broadcast = await waitForResult();
     assertPrivacySessionAfterEvmSubmission(sessionContext, txHash);
     return { ...broadcast, txHash: broadcast.txHash || txHash };
   }
-  const waitPromise = waitForEvmTransaction(txHash, label, reservationBinding);
+  const waitPromise = waitForResult();
   waitPromise.catch(() => {});
   return {
     txHash,
@@ -6990,7 +7174,25 @@ async function reconcilePublicTransaction(kind) {
   try {
     let result;
     if (evm) {
-      result = await waitForEvmTransaction(txHash, isDeposit ? "EVM deposit" : "EVM send");
+      if (isDeposit) {
+        const sender = state.wallet.account;
+        const entry = capturedPublicPendingState(sessionContext)?.deposit;
+        if (entry?.evmRecoveryId) {
+          const saved = await loadEvmDepositRecovery(
+            await currentEvmDepositStore(sessionContext), entry.evmRecoveryId, sender
+          );
+          assertPrivacySession(sessionContext);
+          state.keplr.depositPrepared = saved.prepared;
+          result = await waitForEvmTransaction(txHash, "EVM deposit", saved);
+        } else {
+          result = await waitForLegacyEvmDeposit(clairveilBrowserClient(), txHash, {
+            sender,
+            contractAddress: activeChainProfile()?.evmPrivacyPrecompileAddress
+          });
+        }
+      } else {
+        result = await waitForPublicEvmSend(clairveilBrowserClient(), txHash);
+      }
     } else {
       const check = await checkReservationTransaction(txHash);
       assertPrivacySession(sessionContext);
@@ -7069,9 +7271,24 @@ async function reconcilePublicTransaction(kind) {
     assertPrivacySession(sessionContext);
 
     if (isDeposit) {
+      if (evm) state.keplr.depositExactEventConfirmed = true;
       state.keplr.depositHeight = result.receipt?.blockNumber || result.tx?.height || result.height || state.keplr.depositHeight;
       updateIncludedDepositNetworkFee(result);
-      if (state.keplr.depositPrepared) {
+      if (result.recoveryOnly) {
+        await scanKeplrNotes({ quiet: true, throwOnError: true, maxPages: 1000, sessionContext });
+        assertPrivacySession(sessionContext);
+        const recovered = recoveredLegacyEvmDepositNote(state.keplr.notes, result, baseDenom());
+        if (recovered) {
+          await withPublicTransactionLock(sessionContext, () => {
+            clearCapturedPublicPendingTransaction(sessionContext, "deposit", txHash);
+          });
+          assertPrivacySession(sessionContext);
+        }
+        state.keplr.depositRecoveryStatus = recovered ? "recovered" : "pending";
+        state.keplr.depositRecoveryMessage = recovered
+          ? "Recovered · canonical deposit event matched the owned encrypted note"
+          : "Included · matching owned note not found · Reset & Rescan required";
+      } else if (state.keplr.depositPrepared) {
         await recoverDepositNote({ ...result, prepared: state.keplr.depositPrepared });
         assertPrivacySession(sessionContext);
       } else {
@@ -7166,7 +7383,8 @@ function keplrPrivacyRequest(extra = {}) {
 function evmWalletAdapter(sessionContext = privacySessionSnapshot(), {
   onTransactionAttempt,
   onTransactionHash,
-  onTransactionRejected
+  onTransactionRejected,
+  preparedNonce
 } = {}) {
   const walletAccount = state.wallet.account;
   return {
@@ -7180,7 +7398,12 @@ function evmWalletAdapter(sessionContext = privacySessionSnapshot(), {
       assertPrivacySession(sessionContext);
       await ensureMetaMaskChain();
       assertPrivacySession(sessionContext);
-      const tx = await withEstimatedEvmGas({ ...transaction, from: walletAccount });
+      const estimated = await withEstimatedEvmGas({ ...transaction, from: walletAccount });
+      const tx = preparedNonce != null
+        ? { ...estimated, nonce: preparedNonce }
+        : onTransactionAttempt
+          ? await withPublicEvmNonce(clairveilBrowserClient(), estimated)
+          : estimated;
       assertPrivacySession(sessionContext);
       const attemptId = String(runSynchronousWalletBoundaryCallback(
         "onTransactionAttempt",
@@ -7285,6 +7508,7 @@ async function preparePrivacyTransferSignDoc(amount, recipient, disclosure = {},
   if (amountValue === null) throw new Error("Transfer amount must be a canonical integer");
   await requirePrivacyPreparePreflight(sessionContext);
   assertPrivacySession(sessionContext);
+  await assertPrivacyPreparationNotCancelled(null, options.signal);
   const data = await clairveilBrowserClient().prepareTransfer(privacyRequest({
     amount,
     recipient,
@@ -7311,8 +7535,10 @@ async function preparePrivacyTransferSignDoc(amount, recipient, disclosure = {},
     reservationManager: manager,
     reservationKind: "transfer",
     reservationRecipient: recipient,
+    preparationSignal: options.signal,
     privacySessionContext: sessionContext
   };
+  await assertPrivacyPreparationNotCancelled(preparedData);
   let preparedExpiresAtUnix;
   try {
     preparedExpiresAtUnix = assertPreparedTransferFreshAtChainTime(preparedData, {
@@ -7329,12 +7555,10 @@ async function preparePrivacyTransferSignDoc(amount, recipient, disclosure = {},
     }
     throw error;
   }
-  await refreshReservationState(manager, { sessionContext });
-  assertPrivacySession(sessionContext);
-  return {
+  return finishPrivacyPreparation({
     ...preparedData,
     preparedExpiresAtUnix,
-  };
+  });
 }
 
 async function preparePrivacyWithdrawSignDoc(amount, recipient, options = {}) {
@@ -7345,6 +7569,7 @@ async function preparePrivacyWithdrawSignDoc(amount, recipient, options = {}) {
   if (!manager) throw new Error("Encrypted note reservation manager is not available");
   await requirePrivacyPreparePreflight(sessionContext);
   assertPrivacySession(sessionContext);
+  await assertPrivacyPreparationNotCancelled(null, options.signal);
   const data = await clairveilBrowserClient().prepareWithdraw(privacyRequest({
     amount,
     recipient,
@@ -7362,15 +7587,14 @@ async function preparePrivacyWithdrawSignDoc(amount, recipient, options = {}) {
     signal: options.signal
   }));
   assertPrivacySession(sessionContext);
-  await refreshReservationState(manager, { sessionContext });
-  assertPrivacySession(sessionContext);
-  return {
+  return finishPrivacyPreparation({
     ...data,
     reservationManager: manager,
     reservationKind: "withdraw",
     reservationRecipient: recipient,
+    preparationSignal: options.signal,
     privacySessionContext: sessionContext
-  };
+  });
 }
 
 async function preparePrivacyRelayWithdraw(amount, recipient, options = {}) {
@@ -7381,6 +7605,7 @@ async function preparePrivacyRelayWithdraw(amount, recipient, options = {}) {
   if (!manager) throw new Error("Encrypted note reservation manager is not available");
   await requirePrivacyPreparePreflight(sessionContext);
   assertPrivacySession(sessionContext);
+  await assertPrivacyPreparationNotCancelled(null, options.signal);
   const data = await clairveilBrowserClient().prepareRelayWithdraw(privacyRequest({
     amount,
     recipient,
@@ -7397,15 +7622,14 @@ async function preparePrivacyRelayWithdraw(amount, recipient, options = {}) {
     signal: options.signal
   }));
   assertPrivacySession(sessionContext);
-  await refreshReservationState(manager, { sessionContext });
-  assertPrivacySession(sessionContext);
-  return {
+  return finishPrivacyPreparation({
     ...data,
     reservationManager: manager,
     reservationKind: "relay",
     reservationRecipient: recipient,
+    preparationSignal: options.signal,
     privacySessionContext: sessionContext
-  };
+  });
 }
 
 async function broadcastPrivacyDeposit(amount, label = "deposit", options = {}) {
@@ -7448,6 +7672,7 @@ async function broadcastPrivacyDeposit(amount, label = "deposit", options = {}) 
   const submit = () => broadcastPreparedPrivacy(data, label, {
     ...options,
     sessionContext,
+    publicTransactionLockHeld: true,
     publicPendingKind: "deposit"
   });
   const broadcast = state.activeWallet === "metamask"
@@ -7475,7 +7700,7 @@ async function broadcastPrivacyDeposit(amount, label = "deposit", options = {}) 
         if (submitted.pending || submitted.unknown) {
           persistCapturedPublicPendingTransaction(sessionContext, "deposit", txHash);
         } else if (txHash) {
-          clearCapturedPublicPendingTransaction(sessionContext, "deposit", txHash);
+          persistCapturedDepositRecoveryPending(sessionContext, txHash, submitted.receipt?.blockNumber || "");
         }
         return submitted;
       })
@@ -7524,6 +7749,10 @@ async function recoverDepositNote(broadcast, {
       });
       assertPrivacySession(sessionContext);
       state.keplr.depositExactEventConfirmed = true;
+    } else if (broadcast?.evmPrivacyReceiptVerified === true && broadcast?.evmFinalityVerified === true) {
+      state.keplr.depositExactEventConfirmed = true;
+    } else {
+      throw new Error("Deposit event and canonical inclusion must be verified before note recovery");
     }
     await scanKeplrNotes({
       quiet: true,
@@ -7651,13 +7880,17 @@ function assertSuccessfulBroadcast(broadcast, label = "transaction") {
 async function broadcastPreparedPrivacy(data, label = "privacy transaction", options = {}) {
   const sessionContext = data.privacySessionContext || options.sessionContext || privacySessionSnapshot();
   assertPrivacySession(sessionContext);
+  await assertPrivacyPreparationNotCancelled(data);
   const reservationBinding = preparedReservationBinding(data);
   const relayValidation = data.reservationKind === "withdraw"
     ? {
         relayPayload: data.payload,
         getChainNowUnix: () => fetchLatestChainBlockTimeUnix(),
         expectedChainId: activeChainProfile()?.chainId,
-        expectedRecipient: data.reservationRecipient,
+        expectedRecipient: withdrawPayloadRecipient(data.reservationRecipient, {
+          transport: activeChainProfile()?.transport,
+          accountPrefix: accountPrefix()
+        }),
         accountPrefix: accountPrefix(),
         ...(state.activeWallet === "metamask" ? { expectedEvmChainId: expectedEvmChainIdHex() } : {})
       }
@@ -7696,16 +7929,35 @@ async function broadcastPreparedPrivacy(data, label = "privacy transaction", opt
     ...cosmosTransferValidation
   };
   try {
-    const broadcast = await withPreparedReservationHeartbeat(data, () => {
+    let evmRecoveryId = "";
+    if (state.activeWallet === "metamask" && options.publicPendingKind === "deposit") {
+      const sender = state.wallet.account;
+      evmRecoveryId = await saveEvmDepositRecovery(
+        await currentEvmDepositStore(sessionContext), data.transaction, sender, data.prepared
+      );
       assertPrivacySession(sessionContext);
+    }
+    const broadcast = await withPreparedReservationHeartbeat(data, async () => {
+      assertPrivacySession(sessionContext);
+      await beginPreparedPrivacySubmission(data);
+      if (state.activeWallet === "metamask" && preparedReservationIDs(data).length) {
+        // Cancellation has been checked and disabled. Save the original call,
+        // not the witness/full preparation, before opening the wallet.
+        await saveEvmDepositRecovery(
+          await currentEvmDepositStore(sessionContext, "evm-private"),
+          data.transaction, state.wallet.account
+        );
+        assertPrivacySession(sessionContext);
+      }
       return state.activeWallet === "metamask"
         ? sendEvmTransaction(data.transaction, {
             label,
             waitForReceipt: Boolean(options.waitForEvmReceipt),
             reservationBinding: broadcastOptions,
             sessionContext,
+            accountTransactionLockHeld: Boolean(options.publicTransactionLockHeld),
             ...(options.publicPendingKind
-              ? publicEvmTransactionBoundaryCallbacks(sessionContext, options.publicPendingKind)
+              ? publicEvmTransactionBoundaryCallbacks(sessionContext, options.publicPendingKind, evmRecoveryId)
               : {})
           })
         : signDirectAndBroadcast(data.signDoc, {
@@ -8959,6 +9211,13 @@ async function resolvePreparationRecovery(manager, assessment, evidence, approva
   assertCurrent();
   const reservationIDs = assessment.reservationIDs;
   const status = assessment.status;
+  if (!operatorId || !approvalReference || evidence?.wallet_owner_approved_replan !== true
+    || evidence?.proof_discarded !== true || evidence?.nullifier_unspent_confirmed !== true
+    || evidence?.post_approval_chain_recheck !== true
+    || !Number.isSafeInteger(evidence?.checked_height) || evidence.checked_height <= 0
+    || assessment.action !== "review-replan") {
+    throw new Error("Recovery requires owner approval, proof discard and fresh unspent evidence for this operation");
+  }
   if (assessment.signDocOnly) {
     if (evidence?.sign_doc_only_request !== true
       || evidence?.untracked_wallet_request_acknowledged !== true
@@ -8999,10 +9258,7 @@ async function resolvePreparationRecovery(manager, assessment, evidence, approva
     return "Released unused reservation";
   }
   if (status === reservationStatuses.Proving && assessment.leaseLive) {
-    assertCurrent();
-    await manager.releaseReservedOrProving(reservationIDs, { leaseToken: assessment.leaseToken });
-    assertCurrent();
-    return "Released local proving reservation";
+    throw new Error("Active proving must stop before owner-approved recovery");
   }
   if (status === reservationStatuses.ProofReady && assessment.leaseLive) {
     assertCurrent();
@@ -9109,19 +9365,8 @@ async function recoverReservationPreparation(operationKey) {
         localTestMode: true,
         reserve: state.protocol.reserve
       })) {
-        const staleReset = await maybeResetStaleLocalGenesisReservations(manager, {
-          refreshProtocol: false,
-          sessionContext
-        });
-        assertPrivacySession(sessionContext);
-        if (staleReset.eligible) {
-          if (!staleReset.reset) {
-            els.keplrTxState.textContent = "Fresh-genesis reservation reset cancelled";
-          }
-          return;
-        }
         throw new Error(
-          "Fresh local genesis detected. Run Reset & Rescan to remove previous-genesis notes before resetting stale reservations."
+          "Fresh local genesis detected. This operation-only recovery cannot verify old notes or reset other reservations. Use the separate local-genesis reset flow."
         );
       }
     }
@@ -9142,7 +9387,7 @@ async function recoverReservationPreparation(operationKey) {
       ? `${operationLabel}에는 transaction hash나 signed transaction hash 없이 sign-doc hash만 남아 있습니다. sign-doc hash는 wallet 서명 요청을 식별할 뿐, transaction 미제출을 증명하지 않습니다.\n\n`
         + "지갑 활동과 explorer에서 이 요청으로 제출된 transaction이 없음을 직접 확인했습니까? 승인 직후 chain을 다시 scan하고 모든 nullifier가 여전히 unspent인 경우에만 격리된 reservation을 취소하고 새 계획을 허용합니다."
       : `${operationLabel}의 broadcast 시도 기록이 없고 ${assessment.reservationIDs.length}개 nullifier가 height ${checkedHeight}에서 unspent로 확인되었습니다.\n\n`
-        + "저장되지 않은 local proof를 폐기하고 이 note를 새 transaction 계획에 다시 사용할까요? 이 작업은 기존 proof를 다시 보낼 수 없게 만드는 명시적 recovery 승인입니다."
+        + "기존 proof를 폐기하고 이 작업에 묶인 입력 note만 다시 사용하도록 승인할까요? 다른 작업의 예약은 변경하지 않습니다. 같은 proof에 묶인 입력 note는 함께 처리합니다. 승인 후 체인 상태를 다시 확인합니다."
     );
     assertPrivacySession(sessionContext);
     if (!approved) {
@@ -9150,7 +9395,7 @@ async function recoverReservationPreparation(operationKey) {
       return;
     }
 
-    if (signDocOnlyRecovery) {
+    {
       await scanKeplrNotes({
         quiet: true,
         throwOnError: true,
@@ -9165,15 +9410,15 @@ async function recoverReservationPreparation(operationKey) {
       if (!records.length) {
         await refreshReservationState(manager, { sessionContext });
         assertPrivacySession(sessionContext);
-        toast("The sign-doc-only request was reconciled by the post-approval chain scan; it was not released for replanning.");
+        toast("The operation was reconciled by the post-approval chain scan; it was not released for replanning.");
         return;
       }
       const expectedIDs = [...assessment.reservationIDs].sort();
       assessment = assessReservationRecovery(records, { leaseOwner: reservationLeaseOwner });
       const currentIDs = [...assessment.reservationIDs].sort();
       if (assessment.action !== "review-replan"
-        || assessment.status !== reservationStatuses.ManualReview
-        || assessment.signDocOnly !== true
+        || (signDocOnlyRecovery && assessment.status !== reservationStatuses.ManualReview)
+        || assessment.signDocOnly !== signDocOnlyRecovery
         || assessment.hasQueryableTransactionIdentity === true
         || JSON.stringify(currentIDs) !== JSON.stringify(expectedIDs)) {
         throw new Error("Reservation evidence changed after acknowledgement; keep the operation in Manual Review and reconcile it");
@@ -9187,7 +9432,7 @@ async function recoverReservationPreparation(operationKey) {
       assertPrivacySession(sessionContext);
       checkedHeight = checkedReservationHeight();
       if (unspentIDs.length !== assessment.reservationIDs.length || !checkedHeight) {
-        throw new Error("Post-approval scan did not prove every quarantined nullifier unspent; keep the operation in Manual Review");
+        throw new Error("Post-approval scan did not prove every reserved nullifier unspent; keep the operation locked");
       }
     }
 
@@ -9200,6 +9445,7 @@ async function recoverReservationPreparation(operationKey) {
       nullifier_unspent_confirmed: true,
       checked_height: checkedHeight,
       wallet_owner_approved_replan: true,
+      post_approval_chain_recheck: true,
       ...(signDocOnlyRecovery ? {
         sign_doc_only_request: true,
         queryable_transaction_identity_absent: true,
@@ -9465,7 +9711,7 @@ async function requirePreparedReservationReconciled(data, label, {
   if (unresolved.length) {
     await refreshReservationState(data.reservationManager, { sessionContext });
     assertPrivacySession(sessionContext);
-    const error = new Error(`${label} consumed its input note, but the tx output evidence does not prove the intended recipient and amount. Manual review is required.`);
+    const error = new Error(`${label} input consumption is confirmed, but operation success verification is incomplete. This does not by itself mean the recipient or amount was wrong. Reconcile the existing transaction; do not resubmit it.`);
     error.code = "OPERATION_RECONCILIATION_REQUIRED";
     error.preparedPrivacyData = data;
     throw error;
@@ -9630,7 +9876,9 @@ async function sendFromKeplrUnlocked() {
         try {
           submitted = await sendEvmTransaction(transaction, {
             label: "EVM send",
+            publicSend: true,
             sessionContext,
+            accountTransactionLockHeld: true,
             ...publicEvmTransactionBoundaryCallbacks(sessionContext, "send")
           });
         } catch (error) {
@@ -9667,6 +9915,10 @@ async function sendFromKeplrUnlocked() {
           assertPrivacySession(sessionContext);
           state.keplr.sendStatus = "included";
           els.keplrTxState.textContent = "Send included";
+          showNotice({
+            title: "Send 완료",
+            message: `체인에 포함되어 전송이 성공했습니다.\nTx: ${shorten(state.keplr.sendHash, 14, 12)}`
+          });
           await Promise.allSettled([
             refreshWalletBalance({ sessionContext }),
             refreshBlockEvents({ sessionContext })
@@ -10390,18 +10642,18 @@ async function transferFromVeiledUnlocked() {
     }
 
     const finalPreparedExpiresAtUnix = preparedTransferExpiryUnix(finalData);
-    const finalConfirmed = await withPreparedReservationHeartbeat(finalData, () => (
-      requestPreparedTransferConfirmation({
+    const finalConfirmed = await withPreparedReservationHeartbeat(finalData, async () => {
+      await assertPrivacyPreparationNotCancelled(finalData);
+      return requestPreparedTransferConfirmation({
         ...transferFlowState.review,
         recipient: finalData.prepared?.finalRecipient || recipient,
         amount: coinText(finalData.prepared?.finalAmount || amount),
         changeEffect: preparedTransferChangeEffect(finalData),
         expiresAtUnix: finalPreparedExpiresAtUnix
-      })
-    ));
+      });
+    });
     if (!finalConfirmed) {
-      await discardPreparedReservation(finalData);
-      return;
+      await assertPrivacyPreparationNotCancelled(finalData, AbortSignal.abort());
     }
 
     resetTransferPlannerFacts();
@@ -10806,7 +11058,9 @@ els.reconcileReservations.addEventListener("click", () => reconcileReservations(
 els.reservationRecoveryList.addEventListener("click", event => {
   const button = event.target.closest("[data-recover-reservation-operation]");
   if (!button || button.disabled) return;
-  recoverReservationPreparation(button.dataset.recoverReservationOperation).catch(error => {
+  runValueMovingAction("reservation-recovery", () => (
+    recoverReservationPreparation(button.dataset.recoverReservationOperation)
+  )).catch(error => {
     if (isStalePrivacySessionError(error)) return;
     els.keplrTxState.textContent = "Reservation recovery blocked";
     toast(error.message);
