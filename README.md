@@ -35,14 +35,14 @@ From the samples root, install the SDK and web dependencies:
 cd ..
 git clone https://github.com/DELIGHT-LABS/clairveiljs.git clairveiljs
 cd clairveiljs
-git checkout d14afbeed34441aa946adf857255067235507e7c
+git checkout faf220d5b2fa1a186c30893ca74d765474015aee
 npm ci
 cd ../clairveil-samples
 npm ci
 npm run build:dapp
 ```
 
-If the SDK directory already exists, use that checkout instead of cloning over it. Use a reviewed SDK ref compatible with this sample; the currently checked SDK commit is `d14afbeed34441aa946adf857255067235507e7c` (package version `0.3.1`, including the Cosmos v0.4 deposit contract). Check out that ref before `npm ci` when reproducing this snapshot. Node.js 22+ and npm are recommended for these commands.
+If the SDK directory already exists, use that checkout instead of cloning over it. Use a reviewed SDK ref compatible with this sample; the currently checked SDK commit is `faf220d5b2fa1a186c30893ca74d765474015aee` (package version `0.3.1`, including the Cosmos v0.4 deposit contract). Check out that ref before `npm ci` when reproducing this snapshot. Node.js 22+ and npm are recommended for these commands.
 
 ### 2A. Test an already running chain
 

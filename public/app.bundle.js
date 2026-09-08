@@ -90110,6 +90110,18 @@ async function preparePlanReservation(reservationManager2, {
   }
 }
 async function rollbackPlanReservation(reservationManager2, batch) {
+  return rollbackPlanReservationWithFailure(reservationManager2, batch);
+}
+function preparationFailureKind(error) {
+  try {
+    if (error?.name === "AbortError" || error?.code === "ABORT_ERR") return "cancelled";
+    if (error?.name === "TimeoutError" || error?.code === "ETIMEDOUT") return "timeout";
+    if (String(error?.code ?? error?.data?.code ?? "") === "4001") return "wallet_rejected";
+  } catch {
+  }
+  return "unknown";
+}
+async function rollbackPlanReservationWithFailure(reservationManager2, batch, error) {
   if (!reservationManager2 || !batch?.reservation_ids?.length) return;
   if (typeof reservationManager2.getReservations !== "function") {
     throw new Error("reservationManager.getReservations is required for safe rollback");
@@ -90144,13 +90156,15 @@ async function rollbackPlanReservation(reservationManager2, batch) {
     error: "preparation_outcome_unknown_after_proving",
     metadata: {
       reconcile_reason: "preparation_outcome_unknown_after_proving",
-      rollback_error: "proof_or_solver_may_still_exist"
+      rollback_error: "proof_or_solver_may_still_exist",
+      preparation_failure_kind: preparationFailureKind(error),
+      preparation_failure_status: status
     }
   });
 }
 async function rollbackPlanReservationPreservingError(reservationManager2, batch, error) {
   try {
-    await rollbackPlanReservation(reservationManager2, batch);
+    await rollbackPlanReservationWithFailure(reservationManager2, batch, error);
   } catch (cleanupError) {
     if (error && typeof error === "object") {
       const existing = Array.isArray(error.reservationCleanupErrors) ? error.reservationCleanupErrors : [];

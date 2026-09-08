@@ -33,14 +33,14 @@ workspace/
 cd ..
 git clone https://github.com/DELIGHT-LABS/clairveiljs.git clairveiljs
 cd clairveiljs
-git checkout d14afbeed34441aa946adf857255067235507e7c
+git checkout faf220d5b2fa1a186c30893ca74d765474015aee
 npm ci
 cd ../clairveil-samples
 npm ci
 npm run build:dapp
 ```
 
-SDK 디렉터리가 이미 있으면 다시 clone하지 말고 해당 checkout을 사용하세요. 샘플과 호환되는 검토된 SDK ref를 선택해야 합니다. 현재 검증한 SDK commit은 `d14afbeed34441aa946adf857255067235507e7c`입니다(package version `0.3.1`, Cosmos v0.4 deposit contract 포함). 이 snapshot을 재현하려면 `npm ci` 전에 해당 ref를 checkout하세요. 위 명령에는 Node.js 22+와 npm을 권장합니다.
+SDK 디렉터리가 이미 있으면 다시 clone하지 말고 해당 checkout을 사용하세요. 샘플과 호환되는 검토된 SDK ref를 선택해야 합니다. 현재 검증한 SDK commit은 `faf220d5b2fa1a186c30893ca74d765474015aee`입니다(package version `0.3.1`, Cosmos v0.4 deposit contract 포함). 이 snapshot을 재현하려면 `npm ci` 전에 해당 ref를 checkout하세요. 위 명령에는 Node.js 22+와 npm을 권장합니다.
 
 ### 2A. 이미 실행 중인 체인 테스트
 

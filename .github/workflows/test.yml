@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: DELIGHT-LABS/clairveiljs
-          ref: d14afbeed34441aa946adf857255067235507e7c
+          ref: faf220d5b2fa1a186c30893ca74d765474015aee
           path: clairveiljs
           persist-credentials: false
 
