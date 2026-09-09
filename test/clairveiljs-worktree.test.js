@@ -128,3 +128,15 @@ test("release verification uses the SDK's bundled exact-source contracts", async
     /^npm run link:clairveiljs && node tools\/verify-production-deployment\.mjs$/
   );
 });
+
+test("CI materializes both Core histories required by release verification", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/test.yml", import.meta.url), "utf8");
+  assert.match(
+    workflow,
+    /ref: ca85b02708fdd75259d4d2ee2d671c21198cec69/
+  );
+  assert.match(
+    workflow,
+    /git fetch --no-tags origin\s+0ff92839872de26b787a60d8e4d5822cc459855b:refs\/clairveil-contracts\/v0\.3\.1/
+  );
+});

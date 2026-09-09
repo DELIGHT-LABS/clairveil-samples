@@ -42,6 +42,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The v0.3.1 contract snapshot lives on history that is not an ancestor
+      # of v0.4.0, so the v0.4.0 checkout cannot make this object available.
+      - name: Fetch Core v0.3.1 contract snapshot
+        working-directory: clairveil
+        run: >-
+          git fetch --no-tags origin
+          0ff92839872de26b787a60d8e4d5822cc459855b:refs/clairveil-contracts/v0.3.1
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
