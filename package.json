@@ -24,7 +24,10 @@
     "test:e2e:evm-payable": "CLAIRVEIL_EVM_PAYABLE_E2E_REQUIRED=1 node tools/clairveiljs-worktree.mjs run test:e2e:evm-payable",
     "verify:production-deployment": "npm run link:clairveiljs && node tools/verify-production-deployment.mjs",
     "verify:release": "npm run check:dapp && npm run test:dapp && npm run check:clairveiljs && npm run test:clairveiljs && npm run test:release-contracts",
-    "verify:release:integration": "npm run verify:release && npm run test:e2e:local && npm run test:e2e:evm-payable"
+    "verify:release:integration": "npm run verify:release && npm run test:e2e:local && npm run test:e2e:evm-payable",
+    "build:custody": "node tools/build-custody.mjs",
+    "start:custody": "npm run build:custody && node tools/serve-custody.mjs",
+    "test:custody": "node --test test/custody-*.test.js"
   },
   "dependencies": {
     "clairveiljs": "file:../clairveiljs",

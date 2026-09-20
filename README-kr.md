@@ -10,6 +10,34 @@ Clairveil DApp은 브라우저에서 Keplr 또는 MetaMask를 연결해 Clairvei
 
 Public node 환경에서는 static DApp + ClairveilJS + 공개 RPC/REST + 검토된 prover가 필요합니다. Cosmos profile은 기본적으로 `{proverUrl}/v1/prover/deposit`의 Core v0.4.0 canonical DepositCircuit route를 사용하고 exact canonical endpoint 또는 local/WASM provider로 override할 수 있습니다. EVM profile은 별도로 설정한 기존 deposit provider contract를 유지합니다. DApp backend 자체는 필수가 아닙니다.
 
+## 커스터디 미리보기 (로컬 입금 전용)
+
+별도 `/custody.html` 화면은 고정된 CC-002의 `custody-provider`, `dapp`, `chain-wallet` export를 사용합니다. 기존 `app.bundle.js`를 불러오지 않고 privacy 키 파생·노트 저장·prover witness 전송은 수행하지 않습니다. 기존 샘플 명령은 유지하며 커스터디 화면은 별도의 빌드·서버로 실행합니다.
+
+페이지의 DOM 렌더링은 `public/custody-app.js`, 일반 지갑 설정·제출은 `public/custody-wallet.js`, 요청 권한 관리는 `public/custody-session.js`가 담당합니다. UI와 session은 `public/custody-state.js`의 작업 조건을 공유하며 session의 동시 요청·무효화 검사는 별도로 유지합니다. 두 로컬 서버는 byte 제한 본문 읽기를 공유하지만 경로·한도·broadcast 정책은 각각 유지합니다.
+
+사전 조건: 형제 `clairveil-custody` 저장소에 해당 저장소 `docs/DEVELOPMENT-kr.md`의 정확한 packed preview·설치된 consumer·검증된 `.spike-build/cc002-live` 산출물이 있어야 합니다. 빌드는 기록된 패키지 integrity와 원본 빌드 전체 hash를 대조합니다. SDK 설치·배포, 기존 SDK symlink 변경, 체인 시작·초기화, 계정 충전은 하지 않습니다.
+
+```bash
+# 기존 npm 의존성이 설치된 clairveil-samples에서:
+npm run start:custody
+# 별도 터미널:
+npm run test:custody
+```
+
+1. 별도의 일회용 Chrome/Chromium 프로필에서 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드로 `../clairveil-custody/.spike-build/cc002-manual/extension`을 선택합니다. 같은 테스트 프로필에 지원되는 Keplr 또는 MetaMask를 설치합니다. 검증 브라우저 기준은 Chromium 153이며 Internet Explorer는 지원하지 않습니다.
+2. 기존 CC-002 로컬 node·prover를 실행해 둡니다. Cosmos는 `cc002-local-1` / 포트 26657·1317·8080, EVM은 `maroo-zerofee-2`·EVM 815 / 포트 27657·1417·8545·8190입니다. 잔액이 있는 일회용 테스트 지갑을 사용합니다. 일반 samples `start:local` 체인은 다른 프로필이므로 대신 사용할 수 없습니다.
+3. `http://127.0.0.1:4320/custody.html`에서 네트워크를 선택하고 일반 지갑을 연결합니다. 공개 지갑 정보를 펼쳐 복사한 뒤 커스터디 확장 아이콘을 눌러 작업창에 해당 공개 JSON을 붙여넣고 테스트 계정을 준비합니다. 이 설정 UI는 일반 지갑 mnemonic·개인키를 받지 않습니다.
+4. 웹에서 커스터디 연결을 요청하고 확장에서 승인합니다. 최소 단위 1~999의 입금을 요청하고, 확장에서 privacy 준비를 승인한 다음 일반 지갑 서명을 명시적으로 실행합니다. 제출 후 **체인 결과 확인**을 누릅니다. host가 반환한 `confirmed`에서만 완료로 표시합니다.
+
+Discovery·연결 전에 RPC나 grant를 만들지 않는 로컬 확장 준비 상태 검사를 수행합니다. 페이지를 연 뒤 확장을 설치해 bridge가 없는 경우, 닫히거나 미설정인 작업창, 설정 실패를 구분해 안내합니다. 수동 미리보기를 갱신한 뒤에는 `chrome://extensions`에서 해당 확장을 다시 로드하고 같은 Chrome 프로필의 웹 탭도 새로고침합니다. SDK `4112`는 응답 시간 초과에도 사용되므로 요청 폭주라고 단정할 수 없습니다. 변경 요청을 보낸 뒤의 timeout은 여전히 자동 재시도를 막습니다.
+
+작업창을 열어두어야 합니다. 저장소는 기존 고정 테스트 암호와 테스트 복구 roundtrip을 사용하며 운영용 vault·사용자 휴대용 백업이 아닙니다. 연결 기록과 export 전에 취소된 입금만 있으면 같은 seed와 작업 기록을 유지하며 작업창을 다시 열고 새 연결 승인을 받을 수 있습니다. 그 외 입금 기록은 재시작을 차단하며 기록·자금을 초기화하지 않습니다. 작업창 종료·새로고침, 일반 지갑 변경, 권한 상실은 새 서명을 중단합니다. 불명확한 요청·제출은 자동 재시도하지 않습니다. 이 화면은 hash 없는 제출이나 과거 grant를 복구하지 못하므로 관련 자금으로 다른 실험을 시작하기 전에 기존 harness로 상태를 확인·조정해야 합니다.
+
+공개 계정·잔액·sync, 전송·출금·선택적 공개 host RPC는 아직 구현되지 않았습니다. 전송·출금·공개 버튼은 비활성입니다. Capability와 정확한 네트워크 profile digest를 확인하고 legacy 방식으로 fallback하지 않습니다. 서버는 커스터디 asset, 읽기 전용 Cosmos RPC/REST proxy, 동일 origin JSON broadcast endpoint만 제공합니다. 생성된 bundle·profile·빌드 증거는 ignored 로컬 파일입니다.
+
+새 화면 테스트는 합성 RPC·지갑 응답을 사용하며 기존 Keplr/MetaMask 실제 입금 검증을 이 수동 UI까지 확대하지 않습니다. 운영 릴리스·전체 custody 보안 검증 완료를 의미하지 않습니다.
+
 ## 시작하기: 체인을 준비하고 웹 설정하기
 
 Clairveil privacy module과 호환되는 query, transaction, prover contract를 제공하는 체인을 사용합니다. 이미 배포된 체인에 연결하거나 직접 체인을 띄울 수 있습니다. 체인 운영자가 제공한 메타데이터와 endpoint 주소를 준비하세요. 일반 Cosmos/EVM RPC만으로는 Clairveil 기능을 사용할 수 없습니다.
@@ -419,6 +447,7 @@ npm start
 | 변수 | 용도 |
 | --- | --- |
 | `CLAIRVEIL_DAPP_HOST` / `CLAIRVEIL_DAPP_PORT` | DApp server bind 주소와 포트. 기본은 loopback이며 LAN 노출은 host를 명시적으로 override해야 함 |
+| `CLAIRVEIL_CHAIN_PROXY_ENABLED` | 로컬 테스트 모드에서 `1`로 켜면 고정된 loopback Cosmos REST/RPC를 웹과 동일 origin의 `/chain-rest`·`/chain-rpc`로 제공합니다. `127.0.0.1` bind와 loopback upstream이 필요하며 명시적 browser endpoint override가 없으면 이 경로를 사용합니다. |
 | `CLAIRVEIL_DAPP_LOCAL_TEST_MODE` | `1`이면 local helper 활성화, `0`이면 public node mode |
 | `CLAIRVEIL_DAPP_PUBLIC_ORIGIN` | Public-node mode에서 필수인 정확한 HTTPS browser origin |
 | `CLAIRVEIL_HOME` / `CHAIN_ID` / `CLAIRVEILD_BIN` | local node home, chain id, CLI binary |

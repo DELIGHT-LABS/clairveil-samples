@@ -65,6 +65,22 @@ async function startConfigServer(environment) {
   };
 }
 
+test("local chain proxy advertises same-origin RPC and REST to the page and Keplr", async () => {
+  const environment = environmentWithout(['CLAIRVEIL_PUBLIC_RPC', 'CLAIRVEIL_PUBLIC_REST', 'CLAIRVEIL_COSMOS_RPC', 'CLAIRVEIL_COSMOS_REST'], {
+    CLAIRVEIL_DAPP_LOCAL_TEST_MODE: '1', CLAIRVEIL_CHAIN_PROXY_ENABLED: '1', CLAIRVEIL_TRANSPORT: 'cosmos',
+    CLAIRVEIL_RPC: 'tcp://127.0.0.1:26657', CLAIRVEIL_REST: 'http://127.0.0.1:1317',
+  });
+  const { child, config } = await startConfigServer(environment);
+  try {
+    const profile = config.json.chainProfiles[0];
+    assert.equal(new URL(profile.rpc).pathname, '/chain-rpc');
+    assert.equal(new URL(profile.rest).pathname, '/chain-rest');
+    assert.equal(profile.keplrChainInfo.rpc, profile.rpc);
+    assert.equal(profile.keplrChainInfo.rest, profile.rest);
+    assert.equal(config.json.rpc, profile.rpc); assert.equal(config.json.rest, profile.rest);
+  } finally { await stopChild(child); }
+});
+
 test("Cosmos profile gives transport-specific browser endpoints precedence", async () => {
   const environment = environmentWithout([], {
     CLAIRVEIL_DAPP_LOCAL_TEST_MODE: "1",

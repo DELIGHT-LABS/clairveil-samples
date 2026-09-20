@@ -40,6 +40,7 @@ import {
   hasSuccessfulEvmReceiptStatus,
 } from "./public/transaction-status.js";
 import { isSamePortLoopbackEndpoint } from "./public/browser-profile.js";
+import { createLocalChainProxy } from "./server-chain-proxy.js";
 import { relayWithdrawHandoffPayload } from "./public/relay-withdraw-reconciliation.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -182,16 +183,18 @@ function envEndpointList(value) {
 }
 
 const localTestMode = resolveLocalTestMode();
+const chainProxyEnabled = localTestMode && envFlag("CLAIRVEIL_CHAIN_PROXY_ENABLED", false);
+const serverPort = Number(cliOptions.port ?? process.env.PORT ?? process.env.CLAIRVEIL_DAPP_PORT ?? 5173);
 const config = {
   host: cliOptions.host ?? process.env.CLAIRVEIL_DAPP_HOST ?? "127.0.0.1",
-  port: Number(cliOptions.port ?? process.env.PORT ?? process.env.CLAIRVEIL_DAPP_PORT ?? 5173),
+  port: serverPort,
   home: process.env.CLAIRVEIL_HOME ?? process.env.CLAIRVEIL_DAPP_HOME ?? defaultHome,
   chainId: configuredTransport === "cosmos" ? configuredCosmosChainId : sharedChainId,
   bin: process.env.CLAIRVEILD_BIN ?? "clairveild",
   rpc: process.env.CLAIRVEIL_RPC ?? "tcp://127.0.0.1:26657",
   rest: process.env.CLAIRVEIL_REST ?? "http://127.0.0.1:1317",
-  publicRpc: process.env.CLAIRVEIL_PUBLIC_RPC ?? "",
-  publicRest: process.env.CLAIRVEIL_PUBLIC_REST ?? "",
+  publicRpc: process.env.CLAIRVEIL_PUBLIC_RPC ?? (chainProxyEnabled ? `http://127.0.0.1:${serverPort}/chain-rpc` : ""),
+  publicRest: process.env.CLAIRVEIL_PUBLIC_REST ?? (chainProxyEnabled ? `http://127.0.0.1:${serverPort}/chain-rest` : ""),
   publicRestEndpoints: envEndpointList(process.env.CLAIRVEIL_PUBLIC_REST_ENDPOINTS),
   cosmosRestEndpoints: envEndpointList(process.env.CLAIRVEIL_COSMOS_REST_ENDPOINTS),
   evmHostRestEndpoints: envEndpointList(process.env.CLAIRVEIL_EVM_HOST_REST_ENDPOINTS),
@@ -2946,6 +2949,11 @@ function sendProverNotFound(res) {
   });
 }
 
+if (chainProxyEnabled && config.host !== '127.0.0.1') throw new Error('Local chain proxy requires the 127.0.0.1 bind address');
+const handleChainProxy = chainProxyEnabled ? createLocalChainProxy({
+  origin: `http://127.0.0.1:${config.port}`, rpc: config.rpc, rest: config.rest,
+}) : null;
+
 const server = createServer((req, res) => {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("referrer-policy", "no-referrer");
@@ -2958,6 +2966,11 @@ const server = createServer((req, res) => {
     return;
   }
   const { rawPathname, url } = requestTarget;
+  if (rawPathname.startsWith('/chain-rpc') || rawPathname.startsWith('/chain-rest')) {
+    if (!handleChainProxy || rawPathname !== url.pathname) { sendJson(res, 404, { error: 'not found' }); return; }
+    void handleChainProxy(req, res);
+    return;
+  }
   const decodedRawPathname = decodeRequestPathname(rawPathname);
   const isProverPath = isProverNamespacePath(rawPathname)
     || isProverNamespacePath(url.pathname)
