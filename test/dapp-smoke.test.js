@@ -1,3 +1,4 @@
+import { renderDappMarkup } from "./helpers/react-view.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -17,7 +18,7 @@ const reservationReconciliationSource = await readFile(new URL("../public/reserv
 const configSource = await readFile(new URL("../public/dapp-config.js", import.meta.url), "utf8");
 const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
 const serverSource = await readFile(new URL("../server.js", import.meta.url), "utf8");
-const htmlSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+const htmlSource = await renderDappMarkup();
 const cssSource = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
 test("DApp keeps the top summary focused on core chain status", () => {

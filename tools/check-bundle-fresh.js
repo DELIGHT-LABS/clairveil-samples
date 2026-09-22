@@ -12,12 +12,13 @@ const committedBundle = join(dappRoot, "public", "app.bundle.js");
 try {
   await build({
     absWorkingDir: dappRoot,
-    entryPoints: ["public/app.js"],
+    entryPoints: ["public/dapp-entry.jsx"],
     bundle: true,
     format: "esm",
     platform: "browser",
     target: "es2022",
     preserveSymlinks: true,
+    define: { "process.env.NODE_ENV": '"production"' },
     outfile: generatedBundle,
     logLevel: "silent",
   });

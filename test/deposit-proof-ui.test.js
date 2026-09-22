@@ -1,3 +1,4 @@
+import { renderDappMarkup } from "./helpers/react-view.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -20,7 +21,7 @@ import {
 } from "../public/public-pending-tx-store.js";
 
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-const htmlSource = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+const htmlSource = await renderDappMarkup();
 
 class MemoryStorage {
   constructor() {

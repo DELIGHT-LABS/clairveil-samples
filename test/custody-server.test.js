@@ -22,6 +22,8 @@ async function fixture(t, respond = () => new Response('{"ok":true}')) {
 test('preview serves isolated custody HTML and rejects unrelated files and hostile Host', async t => {
   const f = await fixture(t);
   const response = await f.send('/'); assert.equal(response.status, 200); assert.match(response.body, /custody.bundle.js/); assert.doesNotMatch(response.body, /src="\/app.bundle.js/);
+  assert.equal((await f.send('/custody')).body, response.body);
+  assert.equal((await f.send('/custody.html')).body, response.body);
   assert.equal((await f.send('/app.bundle.js')).status, 404);
   assert.equal((await f.send('/../../package.json')).status, 404);
   assert.equal((await f.send('/', { headers: { host: 'attacker.example' } })).status, 403);

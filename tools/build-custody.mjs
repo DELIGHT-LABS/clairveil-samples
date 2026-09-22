@@ -17,7 +17,7 @@ const consumer = path.resolve(custody, process.env.CC002_CONSUMER_DIR || '.spike
 const sdkRoot = path.join(consumer, 'clairveiljs');
 const sdkPackage = JSON.parse(await readFile(path.join(sdkRoot, 'package.json')));
 const alias = Object.fromEntries(['custody-provider', 'dapp', 'chain-wallet'].map(name => [`clairveiljs/${name}`, path.join(sdkRoot, sdkPackage.exports[`./${name}`].import)]));
-const bundle = await build({ absWorkingDir: root, entryPoints: ['public/custody-app.js'], bundle: true, minify: true,
+const bundle = await build({ absWorkingDir: root, entryPoints: ['public/custody-entry.jsx'], bundle: true, minify: true,
   format: 'esm', platform: 'browser', target: 'es2022', outfile: 'public/custody.bundle.js', metafile: true,
   alias });
 const inputs = Object.keys(bundle.metafile.inputs);

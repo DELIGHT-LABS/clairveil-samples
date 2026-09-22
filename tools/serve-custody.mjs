@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { readBoundedBody } from '../server-bounded-body.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
-const assets = { '/': 'custody.html', '/custody.html': 'custody.html', '/custody.css': 'custody.css',
+const assets = { '/': 'custody.html', '/custody': 'custody.html', '/custody.html': 'custody.html', '/custody.css': 'custody.css',
   '/custody.bundle.js': 'custody.bundle.js', '/custody-profiles.json': 'custody-profiles.json' };
 const readMethods = new Set(['status', 'abci_info', 'abci_query', 'block', 'block_results', 'blockchain', 'commit', 'genesis', 'validators', 'tx', 'tx_search', 'health', 'net_info']);
 const origin = 'http://127.0.0.1:4320';
@@ -58,5 +58,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (createHash('sha256').update(await readFile(path.join(root, name))).digest('hex') !== expected) throw new Error('Custody assets changed; run npm run build:custody.');
   }
   const server = createCustodyPreviewServer();
-  server.listen(4320, '127.0.0.1', () => console.log('Custody preview: http://127.0.0.1:4320/custody.html\nLocal chain/prover and the manual custody workbench must be running.'));
+  server.listen(4320, '127.0.0.1', () => console.log('Custody preview: http://127.0.0.1:4320/custody\nLocal chain/prover and the manual custody workbench must be running.'));
 }

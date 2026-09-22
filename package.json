@@ -8,7 +8,7 @@
   },
   "scripts": {
     "link:clairveiljs": "node tools/clairveiljs-worktree.mjs link",
-    "build:dapp": "npm run link:clairveiljs && esbuild public/app.js --bundle --format=esm --platform=browser --target=es2022 --preserve-symlinks --outfile=public/app.bundle.js",
+    "build:dapp": "npm run link:clairveiljs && esbuild public/dapp-entry.jsx --bundle --format=esm --platform=browser --target=es2022 --preserve-symlinks --define:process.env.NODE_ENV=\\\"production\\\" --outfile=public/app.bundle.js",
     "start": "npm run build:dapp && node server.js",
     "dev": "npm run build:dapp && node server.js",
     "start:local": "./scripts/dapp-local.sh",
