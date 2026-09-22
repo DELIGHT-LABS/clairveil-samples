@@ -12,11 +12,19 @@ The boundary is intentional:
 
 For a public node deployment, the DApp needs the static assets, ClairveilJS, public RPC/REST endpoints, and a reviewed prover. Cosmos profiles use the Core v0.4.0 canonical DepositCircuit route at `{proverUrl}/v1/prover/deposit` by default, with an optional exact canonical endpoint or local/WASM provider override. EVM profiles keep their separately configured deposit-provider contract. A DApp backend is optional.
 
+## React sample screens
+
+Both screens bundle React + JSX independently with esbuild. The regular sample enters through `public/dapp-entry.jsx` → `public/dapp-view.jsx`; custody enters through `public/custody-entry.jsx` → `public/custody-view.jsx`. HTML files only bootstrap the root and script. Existing CSS and run commands are preserved.
+
+The regular JSX is divided into Wallet Session, Clair, Veiled, Relay Withdraw, Events, Auditor and related components. Its existing `public/app.js` transaction/recovery controller starts once per document after React's initial DOM commit and retains its DOM updates and event handling. This is not a rewrite of every regular-sample state into React hooks; do not remount this screen or replace it through client routing. Custody uses React state/effects to render the session and disposes subscriptions, polling and RPC resources on network changes, unmount and pagehide. Mounting never automatically connects or signs.
+
+Default entry URLs are `http://127.0.0.1:5173/` for the regular sample and `http://127.0.0.1:4320/custody` for custody. The custody server also accepts `/` and `/custody.html` for compatibility. Server origins and chain profiles stay separate. Existing screen assertions run against rendered JSX; `test/custody-react.test.js` connects the actual session module to synthetic wallets/RPC to check approval/signing separation, uncertain-result fences, invalidation and cleanup. These checks do not replace real-wallet E2E qualification.
+
 ## Custody preview (local deposit only)
 
-The separate `/custody.html` page uses the pinned CC-002 `custody-provider`, `dapp` and `chain-wallet` exports. It does not load the legacy `app.bundle.js`, derive a privacy key, store notes or send prover witnesses. The original sample remains available through its existing commands; the custody page has its own build and server.
+The separate `/custody` page uses the pinned CC-002 `custody-provider`, `dapp` and `chain-wallet` exports. It does not load the legacy `app.bundle.js`, derive a privacy key, store notes or send prover witnesses. The original sample remains available through its existing commands; the custody page has its own build and server.
 
-The page keeps DOM rendering in `public/custody-app.js`, ordinary-wallet setup/submission in `public/custody-wallet.js`, and request authority in `public/custody-session.js`. The UI and session share operation prerequisites from `public/custody-state.js`; the session still checks concurrent requests and invalidation independently. The two local servers share byte-bounded body reading while retaining their separate routes, limits and broadcast policies.
+The page keeps React rendering in `public/custody-view.jsx`, RPC resource lifetime in `public/custody-app.js`, ordinary-wallet setup/submission in `public/custody-wallet.js`, and request authority in `public/custody-session.js`. The UI and session share operation prerequisites from `public/custody-state.js`; the session still checks concurrent requests and invalidation independently. The two local servers share byte-bounded body reading while retaining their separate routes, limits and broadcast policies.
 
 Prerequisites: the sibling `clairveil-custody` checkout must have the exact packed preview, installed consumer and verified `.spike-build/cc002-live` artifacts described in its `docs/DEVELOPMENT.md`. The build checks the recorded package integrity and all source-build hashes; it does not install or publish an SDK, change the legacy SDK symlink, start/reset chains, or fund accounts.
 
@@ -29,7 +37,7 @@ npm run test:custody
 
 1. In a separate disposable Chrome/Chromium profile, open `chrome://extensions`, enable Developer mode, and load unpacked `../clairveil-custody/.spike-build/cc002-manual/extension`. Install a supported Keplr or MetaMask in that same test profile. The tested browser baseline is Chromium 153; Internet Explorer is not supported.
 2. Keep the original CC-002 local node/prover services running. Cosmos uses `cc002-local-1` / ports 26657, 1317, 8080; EVM uses `maroo-zerofee-2`, EVM 815 / ports 27657, 1417, 8545, 8190. Use a funded disposable test wallet. The normal samples `start:local` chain is a different profile and cannot be substituted.
-3. Open `http://127.0.0.1:4320/custody.html`, choose a network and connect the ordinary wallet. Expand the public wallet information and copy it. Open the custody extension action, paste that public JSON and prepare the local test account. No wallet mnemonic or private key is accepted by that setup UI.
+3. Open `http://127.0.0.1:4320/custody`, choose a network and connect the ordinary wallet. Expand the public wallet information and copy it. Open the custody extension action, paste that public JSON and prepare the local test account. No wallet mnemonic or private key is accepted by that setup UI.
 4. Return to the page and request custody connection. Approve it in the extension. Request a 1–999 base-unit deposit; approve privacy preparation in the extension, then explicitly sign with the ordinary wallet. Choose **Check chain result** after submission. Only host-reported `confirmed` displays completion.
 
 Before discovery or connection, the page probes the local extension for presence and workbench readiness without sending an RPC or creating a grant. Missing injection (including installation after page load), a closed/uninitialized workbench and failed setup each show their own instructions. After updating the manual preview, reload it in `chrome://extensions` and refresh the web tab in the same Chrome profile. SDK error `4112` can also mean a response timeout; it does not by itself prove request flooding. A timeout after a mutating request still blocks automatic retry.
@@ -70,7 +78,7 @@ npm ci
 npm run build:dapp
 ```
 
-If the SDK directory already exists, use that checkout instead of cloning over it. Use a reviewed SDK ref compatible with this sample; the currently checked SDK commit is `faf220d5b2fa1a186c30893ca74d765474015aee` (package version `0.3.1`, including the Cosmos v0.4 deposit contract). Check out that ref before `npm ci` when reproducing this snapshot. Node.js 22+ and npm are recommended for these commands.
+If the SDK directory already exists, use that checkout instead of cloning over it. Use a reviewed SDK ref compatible with this sample; the currently checked SDK commit is `faf220d5b2fa1a186c30893ca74d765474015aee` (package version `0.3.1`, including the Cosmos v0.4 deposit contract). Check out that ref before `npm ci` when reproducing this snapshot. These commands require Node.js `^22.16.0 || >=24.0.0` and npm to support both the React tests' jsdom dependency and the pinned SDK's ES module dependencies. Node.js 22.16+ within the 22.x line is recommended.
 
 ### 2A. Test an already running chain
 
@@ -100,7 +108,7 @@ Restart the server and reload the browser after environment changes. The browser
 
 ### 2B. Start the Clairveil reference chain locally
 
-Install Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22+, and npm. Read the Core [getting-started guide](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md) for circuit generation and machine requirements; use the documentation from the same Core ref you check out.
+Install Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22.16+ (22.x) or 24+, and npm. Read the Core [getting-started guide](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md) for circuit generation and machine requirements; use the documentation from the same Core ref you check out.
 
 After step 1, clone Core beside the samples and run the samples' local runner:
 

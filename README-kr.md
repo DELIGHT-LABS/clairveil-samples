@@ -10,11 +10,19 @@ Clairveil DApp은 브라우저에서 Keplr 또는 MetaMask를 연결해 Clairvei
 
 Public node 환경에서는 static DApp + ClairveilJS + 공개 RPC/REST + 검토된 prover가 필요합니다. Cosmos profile은 기본적으로 `{proverUrl}/v1/prover/deposit`의 Core v0.4.0 canonical DepositCircuit route를 사용하고 exact canonical endpoint 또는 local/WASM provider로 override할 수 있습니다. EVM profile은 별도로 설정한 기존 deposit provider contract를 유지합니다. DApp backend 자체는 필수가 아닙니다.
 
+## React 샘플 화면
+
+두 화면은 React + JSX를 esbuild로 각각 번들링합니다. 일반 샘플은 `public/dapp-entry.jsx` → `public/dapp-view.jsx`, 커스터디 샘플은 `public/custody-entry.jsx` → `public/custody-view.jsx`가 진입점입니다. HTML 파일은 root와 스크립트를 담는 부트스트랩만 담당합니다. 기존 CSS와 실행 명령은 유지합니다.
+
+일반 샘플의 JSX는 Wallet Session, Clair, Veiled, Relay Withdraw, Events, Auditor 등의 컴포넌트로 나뉩니다. 기존 `public/app.js`의 거래·복구 컨트롤러는 React의 최초 DOM commit 이후 문서당 한 번 시작하며, 기존 DOM 갱신·이벤트 처리를 유지합니다. 따라서 일반 샘플은 모든 상태를 React 훅으로 재작성한 구조가 아니며, 이 화면을 재마운트하거나 클라이언트 라우팅으로 교체하지 않습니다. 커스터디는 React state/effect가 세션 상태를 렌더링하고 네트워크 변경·unmount·pagehide에서 구독·polling·RPC 자원을 정리합니다. 자동 연결이나 자동 서명은 하지 않습니다.
+
+기본 진입 주소는 일반 샘플 `http://127.0.0.1:5173/`, 커스터디 `http://127.0.0.1:4320/custody`입니다. 커스터디 서버는 `/`와 `/custody.html`도 호환 경로로 제공합니다. 서버 origin과 체인 프로필은 기존대로 분리합니다. 테스트는 JSX를 실제 렌더링해 기존 화면 검증을 수행하고, `test/custody-react.test.js`에서 실제 세션 모듈과 합성 지갑/RPC를 연결해 승인·서명 분리, 불명확한 결과 차단, 무효화·자원 정리를 확인합니다. 실제 지갑 E2E 검증을 대신하지 않습니다.
+
 ## 커스터디 미리보기 (로컬 입금 전용)
 
-별도 `/custody.html` 화면은 고정된 CC-002의 `custody-provider`, `dapp`, `chain-wallet` export를 사용합니다. 기존 `app.bundle.js`를 불러오지 않고 privacy 키 파생·노트 저장·prover witness 전송은 수행하지 않습니다. 기존 샘플 명령은 유지하며 커스터디 화면은 별도의 빌드·서버로 실행합니다.
+별도 `/custody` 화면은 고정된 CC-002의 `custody-provider`, `dapp`, `chain-wallet` export를 사용합니다. 기존 `app.bundle.js`를 불러오지 않고 privacy 키 파생·노트 저장·prover witness 전송은 수행하지 않습니다. 기존 샘플 명령은 유지하며 커스터디 화면은 별도의 빌드·서버로 실행합니다.
 
-페이지의 DOM 렌더링은 `public/custody-app.js`, 일반 지갑 설정·제출은 `public/custody-wallet.js`, 요청 권한 관리는 `public/custody-session.js`가 담당합니다. UI와 session은 `public/custody-state.js`의 작업 조건을 공유하며 session의 동시 요청·무효화 검사는 별도로 유지합니다. 두 로컬 서버는 byte 제한 본문 읽기를 공유하지만 경로·한도·broadcast 정책은 각각 유지합니다.
+React 화면은 `public/custody-view.jsx`, RPC 자원 생명주기는 `public/custody-app.js`, 일반 지갑 설정·제출은 `public/custody-wallet.js`, 요청 권한 관리는 `public/custody-session.js`가 담당합니다. UI와 session은 `public/custody-state.js`의 작업 조건을 공유하며 session의 동시 요청·무효화 검사는 별도로 유지합니다. 두 로컬 서버는 byte 제한 본문 읽기를 공유하지만 경로·한도·broadcast 정책은 각각 유지합니다.
 
 사전 조건: 형제 `clairveil-custody` 저장소에 해당 저장소 `docs/DEVELOPMENT-kr.md`의 정확한 packed preview·설치된 consumer·검증된 `.spike-build/cc002-live` 산출물이 있어야 합니다. 빌드는 기록된 패키지 integrity와 원본 빌드 전체 hash를 대조합니다. SDK 설치·배포, 기존 SDK symlink 변경, 체인 시작·초기화, 계정 충전은 하지 않습니다.
 
@@ -27,7 +35,7 @@ npm run test:custody
 
 1. 별도의 일회용 Chrome/Chromium 프로필에서 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드로 `../clairveil-custody/.spike-build/cc002-manual/extension`을 선택합니다. 같은 테스트 프로필에 지원되는 Keplr 또는 MetaMask를 설치합니다. 검증 브라우저 기준은 Chromium 153이며 Internet Explorer는 지원하지 않습니다.
 2. 기존 CC-002 로컬 node·prover를 실행해 둡니다. Cosmos는 `cc002-local-1` / 포트 26657·1317·8080, EVM은 `maroo-zerofee-2`·EVM 815 / 포트 27657·1417·8545·8190입니다. 잔액이 있는 일회용 테스트 지갑을 사용합니다. 일반 samples `start:local` 체인은 다른 프로필이므로 대신 사용할 수 없습니다.
-3. `http://127.0.0.1:4320/custody.html`에서 네트워크를 선택하고 일반 지갑을 연결합니다. 공개 지갑 정보를 펼쳐 복사한 뒤 커스터디 확장 아이콘을 눌러 작업창에 해당 공개 JSON을 붙여넣고 테스트 계정을 준비합니다. 이 설정 UI는 일반 지갑 mnemonic·개인키를 받지 않습니다.
+3. `http://127.0.0.1:4320/custody`에서 네트워크를 선택하고 일반 지갑을 연결합니다. 공개 지갑 정보를 펼쳐 복사한 뒤 커스터디 확장 아이콘을 눌러 작업창에 해당 공개 JSON을 붙여넣고 테스트 계정을 준비합니다. 이 설정 UI는 일반 지갑 mnemonic·개인키를 받지 않습니다.
 4. 웹에서 커스터디 연결을 요청하고 확장에서 승인합니다. 최소 단위 1~999의 입금을 요청하고, 확장에서 privacy 준비를 승인한 다음 일반 지갑 서명을 명시적으로 실행합니다. 제출 후 **체인 결과 확인**을 누릅니다. host가 반환한 `confirmed`에서만 완료로 표시합니다.
 
 Discovery·연결 전에 RPC나 grant를 만들지 않는 로컬 확장 준비 상태 검사를 수행합니다. 페이지를 연 뒤 확장을 설치해 bridge가 없는 경우, 닫히거나 미설정인 작업창, 설정 실패를 구분해 안내합니다. 수동 미리보기를 갱신한 뒤에는 `chrome://extensions`에서 해당 확장을 다시 로드하고 같은 Chrome 프로필의 웹 탭도 새로고침합니다. SDK `4112`는 응답 시간 초과에도 사용되므로 요청 폭주라고 단정할 수 없습니다. 변경 요청을 보낸 뒤의 timeout은 여전히 자동 재시도를 막습니다.
@@ -68,7 +76,7 @@ npm ci
 npm run build:dapp
 ```
 
-SDK 디렉터리가 이미 있으면 다시 clone하지 말고 해당 checkout을 사용하세요. 샘플과 호환되는 검토된 SDK ref를 선택해야 합니다. 현재 검증한 SDK commit은 `faf220d5b2fa1a186c30893ca74d765474015aee`입니다(package version `0.3.1`, Cosmos v0.4 deposit contract 포함). 이 snapshot을 재현하려면 `npm ci` 전에 해당 ref를 checkout하세요. 위 명령에는 Node.js 22+와 npm을 권장합니다.
+SDK 디렉터리가 이미 있으면 다시 clone하지 말고 해당 checkout을 사용하세요. 샘플과 호환되는 검토된 SDK ref를 선택해야 합니다. 현재 검증한 SDK commit은 `faf220d5b2fa1a186c30893ca74d765474015aee`입니다(package version `0.3.1`, Cosmos v0.4 deposit contract 포함). 이 snapshot을 재현하려면 `npm ci` 전에 해당 ref를 checkout하세요. React 테스트의 jsdom과 고정된 SDK의 ES 모듈 의존성을 모두 지원하려면 Node.js `^22.16.0 || >=24.0.0`와 npm이 필요합니다. Node.js 22.x 중 22.16 이상을 권장합니다.
 
 ### 2A. 이미 실행 중인 체인 테스트
 
@@ -98,7 +106,7 @@ npm start
 
 ### 2B. Clairveil reference chain을 로컬에서 실행
 
-Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22+, npm을 준비하세요. Circuit 생성과 장비 요구사항은 Core [시작 안내](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md)를 참고하되 실제 checkout한 Core ref의 문서를 기준으로 사용하세요.
+Git, Make, Go 1.25.13, Python 3.9+, Bash, curl, Node.js 22.x 중 22.16 이상 또는 24 이상, npm을 준비하세요. Circuit 생성과 장비 요구사항은 Core [시작 안내](https://github.com/DELIGHT-LABS/clairveil/blob/main/docs/clairveil-getting-started.md)를 참고하되 실제 checkout한 Core ref의 문서를 기준으로 사용하세요.
 
 1단계를 마친 뒤 samples 옆에 Core를 clone하고 samples의 로컬 runner를 실행합니다.
 
