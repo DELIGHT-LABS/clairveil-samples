@@ -5,7 +5,7 @@ function cosmosChainInfo(profile, origin) {
   const coin = { coinDenom: 'CLAIR', coinMinimalDenom: profile.denom, coinDecimals: 18 };
   return {
     chainId: profile.chainId,
-    chainName: 'CC002 Local Cosmos',
+    chainName: 'CC004 Local Cosmos',
     rpc: `${origin}/cosmos-rpc`,
     rest: `${origin}/cosmos-rest`,
     bip44: { coinType: 118 },
@@ -32,7 +32,7 @@ export function createCustodyWallet(profile, page = window) {
       } else {
         if (!page.ethereum) throw new Error('이 브라우저 프로필에 MetaMask를 설치하세요.');
         await page.ethereum.request({ method: 'wallet_addEthereumChain', params: [{
-          chainId: profile.evmChainId, chainName: 'CC002 Local EVM',
+          chainId: profile.evmChainId, chainName: 'CC004 Local EVM',
           nativeCurrency: { name: 'Local test', symbol: 'TEST', decimals: 18 }, rpcUrls: [profile.evmRpc]
         }] });
         await page.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: profile.evmChainId }] });

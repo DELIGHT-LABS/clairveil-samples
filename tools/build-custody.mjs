@@ -7,13 +7,26 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const custody = path.resolve(root, process.env.CLAIRVEIL_CUSTODY_DIR || '../clairveil-custody');
-const result = spawnSync(process.execPath, [path.join(custody, 'scripts/build-manual-preview.mjs')], { cwd: custody, stdio: 'inherit' });
-if (result.error || result.status !== 0) throw new Error('Build the pinned CC-002 integration artifacts first; see README.md (Custody preview).', { cause: result.error });
-const source = path.join(custody, '.spike-build/cc002-manual');
-const evidence = JSON.parse(await readFile(path.join(source, 'preview-evidence.json')));
-const profiles = await readFile(path.join(source, 'extension/profiles.json'));
-if (createHash('sha256').update(profiles).digest('hex') !== evidence.files['profiles.json']) throw new Error('CUSTODY_PROFILES_CHANGED');
-const consumer = path.resolve(custody, process.env.CC002_CONSUMER_DIR || '.spike-build/cc002-consumer/node_modules');
+const result = spawnSync('npm', ['run', 'custody:local-build'], { cwd: custody, stdio: 'inherit' });
+if (result.error || result.status !== 0) throw new Error('Build CC-004 with the pinned SDK and running local services; see README.md.', { cause: result.error });
+const source = path.join(custody, '.spike-build/cc004-host');
+const evidence = JSON.parse(await readFile(path.join(source, 'build-evidence.json')));
+// Both upstream builders verify the archive and installed consumer. Bind these
+// public profiles to every emitted extension/fixture byte before consuming them.
+for (const [name, expected] of Object.entries(evidence.files)) {
+  if (createHash('sha256').update(await readFile(path.join(source, name))).digest('hex') !== expected) throw new Error('CUSTODY_BUILD_CHANGED');
+}
+const { deployments, networks } = JSON.parse(await readFile(path.join(source, 'profiles.json')));
+const profiles = JSON.stringify(Object.fromEntries(deployments.map(({ preparation: p }) => {
+  const network = networks.find(value => value.networkId === p.reader.networkId);
+  if (!network) throw new Error('CUSTODY_NETWORK_MISSING');
+  return [p.transport, { id: p.reader.networkId, transport: p.transport, chainId: p.reader.chainId,
+    caip: network.chainId, profileDigest: network.profileDigest, denom: p.denom, prefix: p.accountPrefix,
+    rpc: p.reader.rpc, rest: p.reader.rest, evmRpc: p.evmRpc, evmChainId: p.evmChainId, contract: p.contract }];
+})), null, 2);
+const pin = JSON.parse(await readFile(path.join(custody, 'tests/custody/sdk-package.json')));
+if (pin.integrity !== evidence.sdk.integrity) throw new Error('CUSTODY_SDK_MISMATCH');
+const consumer = path.resolve(custody, process.env.CC003_CONSUMER_DIR || pin.consumer);
 const sdkRoot = path.join(consumer, 'clairveiljs');
 const sdkPackage = JSON.parse(await readFile(path.join(sdkRoot, 'package.json')));
 const alias = Object.fromEntries(['custody-provider', 'dapp', 'chain-wallet'].map(name => [`clairveiljs/${name}`, path.join(sdkRoot, sdkPackage.exports[`./${name}`].import)]));
@@ -28,6 +41,6 @@ for (const name of ['custody.html', 'custody.css', 'custody.bundle.js', 'custody
   files[name] = createHash('sha256').update(await readFile(path.join(root, 'public', name))).digest('hex');
 }
 await writeFile(path.join(root, 'public/custody-build.json'), JSON.stringify({
-  sdk: evidence.sourceEvidence.sdk, sourceBuild: evidence.sourceEvidence.files, files, inputs
+  host: 'CC-004', sdk: evidence.sdk, sdkSource: evidence.sdkSource, sourceBuild: evidence.files, files, inputs
 }, null, 2));
-console.log('Custody page built with the pinned SDK; no legacy privacy modules in its bundle.');
+console.log('CC-004 custody page built with the pinned SDK; no legacy privacy modules in its bundle.');

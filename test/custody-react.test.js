@@ -20,18 +20,19 @@ function runtimeFixture({ profile, onChange }) {
   let depositError = null;
   const provider = { onInvalidation(fn) { listeners.add(fn); return () => listeners.delete(fn); }, invalidate() { for (const fn of listeners) fn(); } };
   const client = {
-    getCapabilities: async () => ({ methods: depositMethods, networks: [{ networkId: profile.id, chainId: profile.caip, profileDigest: profile.profileDigest }] }),
-    connect: async () => { calls.push('connect'); return { operationId: 'connect', state: 'awaiting_approval' }; },
+    getCapabilities: async () => ({ methods: [...depositMethods, 'clairveil_getBalances'], networks: [{ networkId: profile.id, chainId: profile.caip, profileDigest: profile.profileDigest }] }),
+    connect: async params => { connection.permissions = params.permissions; calls.push('connect'); return { operationId: 'connect', state: 'awaiting_approval' }; },
     getOperation: async () => { calls.push('poll'); return operation; },
     prepareDeposit: async params => { calls.push(['deposit', params.protocol.amountBaseUnits]); if (depositError) throw depositError; return { operationId: 'deposit', state: 'awaiting_approval' }; },
     submit: async () => { calls.push('submit'); return { invoked: true }; },
     reconcile: async () => { calls.push('reconcile'); },
     cancelOperation: async () => ({ operation: { ...operation, state: 'cancelled' } }),
+    getBalances: async () => ({ syncStatus: 'current', rows: [{ assetDenom: profile.denom, verificationState: 'unknown' }] }),
     disconnect: async () => provider.invalidate()
   };
   const wallet = { connect: async () => actor, getActor: async () => actor };
   const session = createCustodySession({ profile, provider, client, wallet, onChange });
-  const runtime = { session, calls, provider, disposed: 0,
+  const runtime = { session, calls, provider, client, disposed: 0,
     connectWallet: () => session.connectWallet(),
     setOperation: value => { operation = value; },
     failDeposit: () => { depositError = new Error('Synthetic timeout'); },
@@ -143,4 +144,22 @@ test('React custody polls approval without signing and stops polling on pagehide
   await f.update(() => window.dispatchEvent(new window.Event('pagehide')));
   await f.update(() => t.mock.timers.tick(3400));
   assert.equal(runtime.calls.filter(value => value === 'poll').length, 1);
+});
+
+
+test('React balance permission is opt-in and unknown/stale balances are never shown as zero', async t => {
+  const f = await mount(t), runtime = f.runtimes[0];
+  assert.equal(f.$('balances').disabled, true);
+  assert.equal(f.$('readBalances').checked, false);
+  await f.click('readBalances'); await connect(f);
+  assert.equal(f.$('balances').disabled, false);
+  await f.click('balances');
+  assert.match(f.$('balanceRows').textContent, /검증 미완료/);
+  assert.doesNotMatch(f.$('balanceRows').textContent, /사용 가능/);
+  runtime.client.getBalances = async () => ({ syncStatus: 'current', rows: [{ assetDenom: 'uclair', verificationState: 'verified', spendableBaseUnits: '7', reservedBaseUnits: '0' }] });
+  await f.click('balances'); assert.match(f.$('balanceRows').textContent, /사용 가능 7/);
+  runtime.client.getBalances = async () => ({ syncStatus: 'stale', rows: [{ assetDenom: 'uclair', verificationState: 'unknown' }] });
+  await f.click('balances'); assert.doesNotMatch(f.$('balanceRows').textContent, /사용 가능/);
+  await f.update(() => runtime.provider.invalidate());
+  assert.equal(f.$('balances').disabled, true); assert.equal(f.$('balanceRows').textContent, '');
 });

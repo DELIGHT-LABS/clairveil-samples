@@ -22,7 +22,7 @@ function fixture(overrides = {}) {
     ...overrides.client
   };
   const wallet = { connect: async () => actor, getActor: async () => actor, ...overrides.wallet };
-  const session = createCustodySession({ client, provider, wallet, profile, checkAvailability: overrides.checkAvailability });
+  const session = createCustodySession({ client, provider, wallet, profile });
   return { session, provider, calls, actor, connection, client, setOperation: value => { operation = value; },
     async connect() { await session.connectWallet(); await session.connectCustody(); await session.refresh(); } };
 }
@@ -99,15 +99,11 @@ test('uncertain submission never enables a second wallet dispatch', async () => 
   await assert.rejects(f.session.cancel());
 });
 
-test('missing or unprepared extension is explained before any RPC or new authorization', async () => {
-  const cases = { missing: '확장 응답', closed: '작업창이 닫혀', setup_required: '계정 설정이 필요', preparing: '준비 중', failed: '준비가 실패', unavailable: '연결이 끊겼' };
-  for (const [workbench, message] of Object.entries(cases)) {
-    let discovery = 0;
-    const f = fixture({ checkAvailability: async () => ({ workbench }), client: { getCapabilities: async () => { discovery++; } } });
-    await f.session.connectWallet(); await assert.rejects(f.session.connectCustody());
-    assert.ok(f.session.state.error.includes(message), workbench);
-    assert.equal(discovery, 0); assert.equal(f.calls.length, 0); assert.equal(f.session.state.uncertain, false);
-  }
+test('CC-004 locked vault is explained after read-only discovery without new authorization', async () => {
+  const f = fixture({ client: { getCapabilities: async () => { throw Object.assign(new Error('VAULT_LOCKED'), { code: 4104 }); } } });
+  await f.session.connectWallet(); await assert.rejects(f.session.connectCustody());
+  assert.match(f.session.state.error, /금고/);
+  assert.equal(f.calls.length, 0); assert.equal(f.session.state.uncertain, false);
 });
 
 test('4112 after dispatch explains timeout/limit and preserves the uncertain-request fence', async () => {
@@ -145,4 +141,18 @@ test('UI actions and command admission agree across deposit preparation, signing
   }
   assert.equal(f.calls.filter(([method]) => method === 'deposit').length, 1);
   assert.equal(f.calls.some(([method]) => ['submit', 'reconcile'].includes(method)), false);
+});
+
+
+test('balance permission is explicit, capability-gated and clears stale data on failure', async () => {
+  const f = fixture(); await f.session.connectWallet();
+  await assert.rejects(f.session.connectCustody({ readBalances: true }), /잔액 조회/);
+  assert.equal(f.calls.length, 0);
+  await f.session.connectCustody(); await f.session.refresh();
+  await assert.rejects(f.session.balances(), /권한/);
+  f.connection.permissions.push('balance.read');
+  f.client.getBalances = async () => ({ syncStatus: 'current', rows: [{ assetDenom: 'aokrw', verificationState: 'verified', spendableBaseUnits: '7', reservedBaseUnits: '0' }] });
+  await f.session.balances(); assert.equal(f.session.state.balances.rows[0].spendableBaseUnits, '7');
+  f.client.getBalances = async () => { throw new Error('Synthetic read failure'); };
+  await assert.rejects(f.session.balances()); assert.equal(f.session.state.balances, null);
 });

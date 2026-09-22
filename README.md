@@ -20,33 +20,31 @@ The regular JSX is divided into Wallet Session, Clair, Veiled, Relay Withdraw, E
 
 Default entry URLs are `http://127.0.0.1:5173/` for the regular sample and `http://127.0.0.1:4320/custody` for custody. The custody server also accepts `/` and `/custody.html` for compatibility. Server origins and chain profiles stay separate. Existing screen assertions run against rendered JSX; `test/custody-react.test.js` connects the actual session module to synthetic wallets/RPC to check approval/signing separation, uncertain-result fences, invalidation and cleanup. These checks do not replace real-wallet E2E qualification.
 
-## Custody preview (local deposit only)
+## Custody preview (CC-004 local host)
 
-The separate `/custody` page uses the pinned CC-002 `custody-provider`, `dapp` and `chain-wallet` exports. It does not load the legacy `app.bundle.js`, derive a privacy key, store notes or send prover witnesses. The original sample remains available through its existing commands; the custody page has its own build and server.
+`/custody` uses the current pinned CC-004 SDK and `extension-v1` raw JSON channels. `npm run start:custody` runs `custody:local-build` in the sibling `clairveil-custody`, verifies `.spike-build/cc004-host` build evidence/profiles and builds the web. That repository's `tests/custody/sdk-package.json` owns the package pin. The default consumer is `.spike-build/cc004-consumer/node_modules`; `CC003_CONSUMER_DIR` / `CC003_SDK_TARBALL` only relocate identical bytes. There is no fallback to the old CC-002 bridge or fixed-password setup UI.
 
-The page keeps React rendering in `public/custody-view.jsx`, RPC resource lifetime in `public/custody-app.js`, ordinary-wallet setup/submission in `public/custody-wallet.js`, and request authority in `public/custody-session.js`. The UI and session share operation prerequisites from `public/custody-state.js`; the session still checks concurrent requests and invalidation independently. The two local servers share byte-bounded body reading while retaining their separate routes, limits and broadcast policies.
-
-Prerequisites: the sibling `clairveil-custody` checkout must have the exact packed preview, installed consumer and verified `.spike-build/cc002-live` artifacts described in its `docs/DEVELOPMENT.md`. The build checks the recorded package integrity and all source-build hashes; it does not install or publish an SDK, change the legacy SDK symlink, start/reset chains, or fund accounts.
+Prerequisites are the prepared CC-004 SDK archive/consumer and running existing local chains/provers. The build does not install/publish SDKs or start/reset/fund chains. It reuses the `cc002-local-1` Cosmos and `maroo-zerofee-2` EVM local services, with network digests taken from the CC-004 deployment profiles.
 
 ```bash
-# From clairveil-samples, with its existing npm dependencies installed:
 npm run start:custody
-# Separate terminal:
+# Separate terminal: synthetic RPC/React regression tests
 npm run test:custody
+# After building: actual extension/sample, synthetic chain wallets, no signing/broadcast
+npm run test:custody:host
 ```
 
-1. In a separate disposable Chrome/Chromium profile, open `chrome://extensions`, enable Developer mode, and load unpacked `../clairveil-custody/.spike-build/cc002-manual/extension`. Install a supported Keplr or MetaMask in that same test profile. The tested browser baseline is Chromium 153; Internet Explorer is not supported.
-2. Keep the original CC-002 local node/prover services running. Cosmos uses `cc002-local-1` / ports 26657, 1317, 8080; EVM uses `maroo-zerofee-2`, EVM 815 / ports 27657, 1417, 8545, 8190. Use a funded disposable test wallet. The normal samples `start:local` chain is a different profile and cannot be substituted.
-3. Open `http://127.0.0.1:4320/custody`, choose a network and connect the ordinary wallet. Expand the public wallet information and copy it. Open the custody extension action, paste that public JSON and prepare the local test account. No wallet mnemonic or private key is accepted by that setup UI.
-4. Return to the page and request custody connection. Approve it in the extension. Request a 1–999 base-unit deposit; approve privacy preparation in the extension, then explicitly sign with the ordinary wallet. Choose **Check chain result** after submission. Only host-reported `confirmed` displays completion.
+1. In a disposable Chrome/Chromium profile (baseline Chromium 153), load `../clairveil-custody/.spike-build/cc004-host/extension` and install Keplr or MetaMask. Reload the extension and web tab after rebuilding.
+2. Create or unlock the vault in the extension workbench, save and independently verify its backup, then approve “Trust local node and activate” for the selected chain. The former CC-002 public-wallet-JSON paste step and fixed test password are not used.
+3. Open `http://127.0.0.1:4320/custody`, select the network and connect the ordinary wallet. The Cosmos public key is automatically included in the connection request. Optionally select the balance-permission checkbox, request custody connection and approve it in the extension.
+4. Request a 1–999 base-unit deposit and approve privacy/prover disclosure in the extension. Explicitly sign with the ordinary wallet from the web and check the chain result. Only host-reported `confirmed` displays completion.
+5. With balance permission, use “Refresh scan and balances” in the workbench, then query balances from the web. Values are snapshots of the last response; only `current` + `verified` rows display amounts. Unknown/incomplete is never rendered as zero. Host verification lasts at most 30 seconds from observation; refresh the trusted scan when stale. Public `sync` is not supported.
 
-Before discovery or connection, the page probes the local extension for presence and workbench readiness without sending an RPC or creating a grant. Missing injection (including installation after page load), a closed/uninitialized workbench and failed setup each show their own instructions. After updating the manual preview, reload it in `chrome://extensions` and refresh the web tab in the same Chrome profile. SDK error `4112` can also mean a response timeout; it does not by itself prove request flooding. A timeout after a mutating request still blocks automatic retry.
+Locking/closing the workbench or losing authority blocks new submission at the host. CC-004 has no separate CC-002 readiness probe: discovery uses a read-only capabilities RPC and explains locked/inactive/unresponsive states. Uncertain connection/deposit/submission requests are never automatically retried. Inspect past-operation recovery and restored-backup restrictions in the host workbench after restart. The sample does not yet expose a recovery-only connection UI.
 
-The workbench must stay open. Its store uses the existing fixed test password and a test recovery roundtrip, not a production vault or a portable user backup. Connection-only history and deposits cancelled before export allow reopening the workbench with the same seed and preserved records, followed by a fresh connection approval. Other deposit records block restart; no records or funds are reset. Closing/reloading the workbench, changing the ordinary wallet, or losing authority stops new signing. Unknown requests/submissions are never automatically retried. The page cannot recover a hashless attempt or reconnect an old grant; inspect/reconcile through the existing harness before starting another experiment involving those funds.
+React UI lives in `public/custody-view.jsx`, resource lifetime in `public/custody-app.js`, ordinary wallets in `public/custody-wallet.js`, and request authority/operation state in `public/custody-session.js`. The server exposes custody assets, read-only Cosmos proxies and a bounded same-origin broadcast route. The web never holds privacy keys, notes or witnesses or loads the legacy `app.bundle.js`. Transfer, withdraw and disclosure remain unsupported and disabled.
 
-Public account/balance/sync, transfer, withdraw and disclosure host RPCs are not implemented in this preview. Transfer/withdraw/disclosure controls remain disabled. Capability and exact network-profile digest checks prevent legacy fallback. The server serves only custody assets, read-only Cosmos RPC/REST proxies and a same-origin JSON broadcast endpoint. Generated bundle, profiles and build evidence are ignored local files.
-
-New page tests use synthetic RPC/wallet responses; they do not extend the existing Keplr/MetaMask real-deposit qualification to this manual UI. No production release or full custody security qualification is claimed.
+`test:custody:host` uses the actual built React page, extension, Argon2 vault, saved-backup verification and local nodes to verify connection approval, verified zero balances and deposit cancellation before export on both chains. Ordinary wallets are synthetic actors; any signing/broadcast fails the test. This does not replace real Keplr/MetaMask deposit requalification or production security qualification.
 
 ## Start here: choose a chain and configure the web
 

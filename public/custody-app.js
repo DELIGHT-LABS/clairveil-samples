@@ -7,16 +7,16 @@ import { createCustodyWallet, watchCustodyWallet, broadcastCustodyCosmos } from 
 // React owns rendering; this adapter owns one profile's wallet/RPC resources.
 export function createCustodyRuntime({ profile, onChange, browser = window }) {
   const bridge = createLocalCustodyBridge(browser);
-  const provider = createCustodyProvider({ transport: createDirectBridgeTransport({ exchange: bridge.exchange }), subscribeInvalidation: bridge.subscribe, timeoutMs: 12000 });
+  const provider = createCustodyProvider({ transport: createDirectBridgeTransport({ exchange: bridge.exchange }), subscribeInvalidation: bridge.subscribe, timeoutMs: 40000 });
   let session, cleanWalletEvents = () => {}, disposed = false;
   try {
-    const wallet = createCustodyWallet(profile);
+    const wallet = createCustodyWallet(profile, browser);
     const client = createClairveilDappClient({ custodyProvider: provider, chainWallet: wallet,
       validateArtifact: createArtifactVerifier({ profileDigest: profile.profileDigest, chainId: profile.caip, assetDenom: profile.denom,
         ...(profile.contract ? { contractAddress: profile.contract, protocolChainId: profile.chainId } : {}) }),
       broadcastCosmos: broadcastCustodyCosmos
     });
-    session = createCustodySession({ client, provider, wallet, profile, checkAvailability: bridge.probe, onChange });
+    session = createCustodySession({ client, provider, wallet, profile, onChange });
   } catch (error) { provider.dispose(); bridge.close(); throw error; }
   return {
     session,

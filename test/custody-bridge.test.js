@@ -1,52 +1,48 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalCustodyBridge } from '../public/custody-bridge.js';
-
-function pageFixture() {
+import { createLocalCustodyBridge, REQUEST_CHANNEL, RESPONSE_CHANNEL } from '../public/custody-bridge.js';
+function fixture() {
   const events = new Set(), sent = [];
   const page = { location: { origin: 'http://127.0.0.1:4320' }, addEventListener: (_, fn) => events.add(fn), removeEventListener: (_, fn) => events.delete(fn), postMessage: message => sent.push(message) };
   return { page, sent, deliver(data, fields = {}) { for (const fn of events) fn({ source: page, origin: page.location.origin, data, ...fields }); } };
 }
-
-test('local bridge correlates replies and ignores other windows/origins', async () => {
-  const f = pageFixture(), bridge = createLocalCustodyBridge(f.page);
-  const response = { id: 'one', jsonrpc: '2.0', result: {} };
-  const p = bridge.exchange({ id: 'one' });
-  f.deliver({ source: 'cc002-host', response }, { source: {} });
-  f.deliver({ source: 'cc002-host', response }, { origin: 'https://wrong.example' });
-  f.deliver({ source: 'cc002-host', response: { ...response, id: 'other' } });
-  f.deliver({ source: 'cc002-host', response }); assert.equal(await p, response); bridge.close();
+test('CC-004 bridge sends bounded raw extension-v1 frames and correlates replies', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page);
+  const request = { id: 'one', jsonrpc: '2.0', method: 'clairveil_getCapabilities', params: { protocolVersion: '1' } };
+  const reply = { channel: RESPONSE_CHANNEL, payload: JSON.stringify({ id: 'one', jsonrpc: '2.0', result: {} }) };
+  const pending = bridge.exchange(request);
+  assert.deepEqual(f.sent[0], { channel: REQUEST_CHANNEL, payload: JSON.stringify(request) });
+  f.deliver(reply, { source: {} }); f.deliver(reply, { origin: 'https://wrong.example' });
+  f.deliver({ source: 'cc002-host', response: JSON.parse(reply.payload) });
+  f.deliver({ channel: RESPONSE_CHANNEL, payload: '{' });
+  f.deliver({ channel: RESPONSE_CHANNEL, payload: JSON.stringify({ id: 'other' }) });
+  f.deliver(reply); assert.equal(await pending, reply.payload); bridge.close();
 });
-
-test('invalidation rejects pending exchanges and cannot be undone by a late reply', async () => {
-  const f = pageFixture(), bridge = createLocalCustodyBridge(f.page); let invalidations = 0;
+test('raw duplicate JSON members reach the SDK validator without normalization', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page);
+  const pending = bridge.exchange({ id: 'one' });
+  const raw = '{"id":"one","jsonrpc":"2.0","result":{},"result":{}}';
+  f.deliver({ channel: RESPONSE_CHANNEL, payload: raw }); assert.equal(await pending, raw); bridge.close();
+});
+test('closure rejects pending work and late replies never restore authority', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page); let invalidations = 0;
   bridge.subscribe(() => invalidations++);
-  const p = bridge.exchange({ id: 'one' }), rejected = assert.rejects(p);
-  f.deliver({ source: 'cc002-host', invalidated: true }); await rejected;
-  f.deliver({ source: 'cc002-host', response: { id: 'one', result: {} } });
-  await assert.rejects(bridge.exchange({ id: 'two' })); assert.equal(invalidations, 1); bridge.close();
+  const pending = bridge.exchange({ id: 'one' }), rejected = assert.rejects(pending);
+  bridge.close(); await rejected;
+  f.deliver({ channel: RESPONSE_CHANNEL, payload: '{"id":"one","result":{}}' });
+  await assert.rejects(bridge.exchange({ id: 'two' })); assert.equal(invalidations, 1);
 });
-
-test('absent extension times out and wrong page origins do not send requests', async () => {
-  const f = pageFixture(), bridge = createLocalCustodyBridge(f.page, { timeoutMs: 10 });
-  await assert.rejects(bridge.exchange({ id: 'one' })); bridge.close();
+test('absent extension times out and wrong origins or oversize requests send nothing', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page, { timeoutMs: 10 });
+  await assert.rejects(bridge.exchange({ id: 'one' }), /CC-004/);
+  await assert.rejects(bridge.exchange({ id: 'large', value: '가'.repeat(12000) }));
   f.page.location.origin = 'http://127.0.0.1:5173';
-  const other = createLocalCustodyBridge(f.page); await assert.rejects(other.exchange({ id: 'two' }));
-  assert.equal(f.sent.length, 1); other.close();
+  await assert.rejects(bridge.exchange({ id: 'two' })); assert.equal(f.sent.length, 1); bridge.close();
 });
-
-test('readiness probe uses a separate correlated channel and sends no custody RPC', async () => {
-  const f = pageFixture(), bridge = createLocalCustodyBridge(f.page);
-  const pending = bridge.probe(), probe = f.sent[0];
-  assert.equal(probe.source, 'cc002-preview'); assert.equal(probe.request, undefined);
-  f.deliver({ source: 'cc002-preview', type: 'status', nonce: 'wrong', workbench: 'ready' });
-  f.deliver({ source: 'cc002-preview', type: 'status', nonce: probe.nonce, workbench: 'ready' }, { source: {} });
-  f.deliver({ source: 'cc002-preview', type: 'status', nonce: probe.nonce, workbench: 'setup_required' });
-  assert.deepEqual(await pending, { workbench: 'setup_required' }); bridge.close();
-});
-
-test('missing extension reports absence without surfacing SDK RESOURCE_LIMIT', async () => {
-  const f = pageFixture(), bridge = createLocalCustodyBridge(f.page, { probeTimeoutMs: 10 });
-  assert.deepEqual(await bridge.probe(), { workbench: 'missing' });
-  const pending = bridge.probe(); bridge.close(); assert.deepEqual(await pending, { workbench: 'unavailable' });
+test('oversize responses are ignored and an outstanding ID cannot be reused', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page, { timeoutMs: 10 });
+  const pending = bridge.exchange({ id: 'one' });
+  await assert.rejects(bridge.exchange({ id: 'one' }));
+  f.deliver({ channel: RESPONSE_CHANNEL, payload: JSON.stringify({ id: 'one', result: '가'.repeat(180000) }) });
+  await assert.rejects(pending); bridge.close();
 });

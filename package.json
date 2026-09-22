@@ -27,7 +27,8 @@
     "verify:release:integration": "npm run verify:release && npm run test:e2e:local && npm run test:e2e:evm-payable",
     "build:custody": "node tools/build-custody.mjs",
     "start:custody": "npm run build:custody && node tools/serve-custody.mjs",
-    "test:custody": "node --test test/custody-*.test.js"
+    "test:custody": "node --test test/custody-*.test.js",
+    "test:custody:host": "node tools/check-custody-host.mjs"
   },
   "dependencies": {
     "clairveiljs": "file:../clairveiljs",

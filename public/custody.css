@@ -361,3 +361,19 @@ footer {
     font-size: 13px;
   }
 }
+
+.permission-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.permission-choice input {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: #12674f;
+}
+.balance-card {
+  margin-top: 24px;
+}

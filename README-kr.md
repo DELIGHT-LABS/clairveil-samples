@@ -18,33 +18,31 @@ Public node 환경에서는 static DApp + ClairveilJS + 공개 RPC/REST + 검토
 
 기본 진입 주소는 일반 샘플 `http://127.0.0.1:5173/`, 커스터디 `http://127.0.0.1:4320/custody`입니다. 커스터디 서버는 `/`와 `/custody.html`도 호환 경로로 제공합니다. 서버 origin과 체인 프로필은 기존대로 분리합니다. 테스트는 JSX를 실제 렌더링해 기존 화면 검증을 수행하고, `test/custody-react.test.js`에서 실제 세션 모듈과 합성 지갑/RPC를 연결해 승인·서명 분리, 불명확한 결과 차단, 무효화·자원 정리를 확인합니다. 실제 지갑 E2E 검증을 대신하지 않습니다.
 
-## 커스터디 미리보기 (로컬 입금 전용)
+## 커스터디 미리보기 (CC-004 로컬 호스트)
 
-별도 `/custody` 화면은 고정된 CC-002의 `custody-provider`, `dapp`, `chain-wallet` export를 사용합니다. 기존 `app.bundle.js`를 불러오지 않고 privacy 키 파생·노트 저장·prover witness 전송은 수행하지 않습니다. 기존 샘플 명령은 유지하며 커스터디 화면은 별도의 빌드·서버로 실행합니다.
+`/custody`는 현재 CC-004의 고정 SDK와 `extension-v1` raw JSON 채널을 사용합니다. `npm run start:custody`는 형제 `clairveil-custody`에서 `custody:local-build`를 실행하고 `.spike-build/cc004-host`의 빌드 증거·프로필을 확인해 웹을 빌드합니다. SDK 패키지는 그 저장소의 `tests/custody/sdk-package.json`이 소유합니다. 기본 consumer는 `.spike-build/cc004-consumer/node_modules`이며 `CC003_CONSUMER_DIR` / `CC003_SDK_TARBALL`은 동일 바이트의 위치만 변경합니다. 이전 CC-002 bridge·고정 암호 설정 UI로 fallback하지 않습니다.
 
-React 화면은 `public/custody-view.jsx`, RPC 자원 생명주기는 `public/custody-app.js`, 일반 지갑 설정·제출은 `public/custody-wallet.js`, 요청 권한 관리는 `public/custody-session.js`가 담당합니다. UI와 session은 `public/custody-state.js`의 작업 조건을 공유하며 session의 동시 요청·무효화 검사는 별도로 유지합니다. 두 로컬 서버는 byte 제한 본문 읽기를 공유하지만 경로·한도·broadcast 정책은 각각 유지합니다.
-
-사전 조건: 형제 `clairveil-custody` 저장소에 해당 저장소 `docs/DEVELOPMENT-kr.md`의 정확한 packed preview·설치된 consumer·검증된 `.spike-build/cc002-live` 산출물이 있어야 합니다. 빌드는 기록된 패키지 integrity와 원본 빌드 전체 hash를 대조합니다. SDK 설치·배포, 기존 SDK symlink 변경, 체인 시작·초기화, 계정 충전은 하지 않습니다.
+사전 조건은 준비된 CC-004 SDK archive/consumer와 실행 중인 기존 로컬 체인·prover입니다. 빌드는 SDK를 설치·배포하거나 체인을 시작·초기화·충전하지 않습니다. 기존 `cc002-local-1` Cosmos와 `maroo-zerofee-2` EVM 로컬 서비스를 그대로 사용하되, 네트워크 digest는 CC-004 배포 프로필에서 가져옵니다.
 
 ```bash
-# 기존 npm 의존성이 설치된 clairveil-samples에서:
 npm run start:custody
-# 별도 터미널:
+# 별도 터미널: 합성 RPC/React 회귀 테스트
 npm run test:custody
+# 빌드 후: 실제 확장·샘플 화면, 합성 일반 지갑, 서명/송금 없음
+npm run test:custody:host
 ```
 
-1. 별도의 일회용 Chrome/Chromium 프로필에서 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드로 `../clairveil-custody/.spike-build/cc002-manual/extension`을 선택합니다. 같은 테스트 프로필에 지원되는 Keplr 또는 MetaMask를 설치합니다. 검증 브라우저 기준은 Chromium 153이며 Internet Explorer는 지원하지 않습니다.
-2. 기존 CC-002 로컬 node·prover를 실행해 둡니다. Cosmos는 `cc002-local-1` / 포트 26657·1317·8080, EVM은 `maroo-zerofee-2`·EVM 815 / 포트 27657·1417·8545·8190입니다. 잔액이 있는 일회용 테스트 지갑을 사용합니다. 일반 samples `start:local` 체인은 다른 프로필이므로 대신 사용할 수 없습니다.
-3. `http://127.0.0.1:4320/custody`에서 네트워크를 선택하고 일반 지갑을 연결합니다. 공개 지갑 정보를 펼쳐 복사한 뒤 커스터디 확장 아이콘을 눌러 작업창에 해당 공개 JSON을 붙여넣고 테스트 계정을 준비합니다. 이 설정 UI는 일반 지갑 mnemonic·개인키를 받지 않습니다.
-4. 웹에서 커스터디 연결을 요청하고 확장에서 승인합니다. 최소 단위 1~999의 입금을 요청하고, 확장에서 privacy 준비를 승인한 다음 일반 지갑 서명을 명시적으로 실행합니다. 제출 후 **체인 결과 확인**을 누릅니다. host가 반환한 `confirmed`에서만 완료로 표시합니다.
+1. 별도 테스트용 Chrome/Chromium 프로필(기준 Chromium 153)에 `../clairveil-custody/.spike-build/cc004-host/extension`을 로드하고 Keplr 또는 MetaMask를 준비합니다. 빌드 갱신 뒤에는 확장과 웹 탭을 다시 로드하세요.
+2. 확장 작업창에서 금고를 생성하거나 잠금 해제하고, 독립 백업을 저장·검증한 뒤 선택한 체인의 “로컬 노드 신뢰·활성화”를 승인합니다. 과거 CC-002 공개 지갑 JSON 붙여넣기나 고정 테스트 암호는 사용하지 않습니다.
+3. `http://127.0.0.1:4320/custody`에서 네트워크와 일반 지갑을 연결합니다. Cosmos 공개키는 연결 요청에 자동 포함됩니다. 필요하면 “잔액 조회 권한도 요청”을 선택하고 커스터디 연결을 요청한 뒤 확장에서 승인합니다.
+4. 1~999 최소 단위 입금을 요청하고 확장에서 privacy·prover 공개를 승인합니다. 웹에서 일반 지갑 서명을 명시적으로 실행하고 체인 결과를 확인합니다. host의 `confirmed`만 완료로 표시합니다.
+5. 잔액 권한을 승인했다면 작업창에서 “스캔·잔액 새로고침” 후 웹에서 “잔액 조회”를 누릅니다. 표시값은 최근 응답의 스냅샷이며, host가 `current` + `verified`로 반환한 행만 금액을 표시합니다. unknown/incomplete를 0으로 표시하지 않습니다. 검증 유효시간은 관측 후 최대 30초이므로 오래됐으면 작업창에서 다시 스캔하세요. 공개 `sync`는 아직 지원하지 않습니다.
 
-Discovery·연결 전에 RPC나 grant를 만들지 않는 로컬 확장 준비 상태 검사를 수행합니다. 페이지를 연 뒤 확장을 설치해 bridge가 없는 경우, 닫히거나 미설정인 작업창, 설정 실패를 구분해 안내합니다. 수동 미리보기를 갱신한 뒤에는 `chrome://extensions`에서 해당 확장을 다시 로드하고 같은 Chrome 프로필의 웹 탭도 새로고침합니다. SDK `4112`는 응답 시간 초과에도 사용되므로 요청 폭주라고 단정할 수 없습니다. 변경 요청을 보낸 뒤의 timeout은 여전히 자동 재시도를 막습니다.
+작업창 잠금·종료나 권한 상실은 host에서 새 제출을 차단합니다. CC-004에는 CC-002의 별도 준비 상태 probe가 없으므로 읽기 전용 capabilities RPC로 지원 여부를 확인하며, 잠금·미활성화·응답 시간 초과를 안내합니다. 연결·입금·제출 결과가 불명확하면 자동 재시도하지 않습니다. 작업창 재시작 후 과거 작업 복구 및 백업 복원 제한은 host 작업창에서 확인하세요. 샘플에는 recovery-only 연결 UI가 아직 없습니다.
 
-작업창을 열어두어야 합니다. 저장소는 기존 고정 테스트 암호와 테스트 복구 roundtrip을 사용하며 운영용 vault·사용자 휴대용 백업이 아닙니다. 연결 기록과 export 전에 취소된 입금만 있으면 같은 seed와 작업 기록을 유지하며 작업창을 다시 열고 새 연결 승인을 받을 수 있습니다. 그 외 입금 기록은 재시작을 차단하며 기록·자금을 초기화하지 않습니다. 작업창 종료·새로고침, 일반 지갑 변경, 권한 상실은 새 서명을 중단합니다. 불명확한 요청·제출은 자동 재시도하지 않습니다. 이 화면은 hash 없는 제출이나 과거 grant를 복구하지 못하므로 관련 자금으로 다른 실험을 시작하기 전에 기존 harness로 상태를 확인·조정해야 합니다.
+React UI는 `public/custody-view.jsx`, 자원 생명주기는 `public/custody-app.js`, 일반 지갑은 `public/custody-wallet.js`, 요청 권한과 작업 상태는 `public/custody-session.js`가 담당합니다. 서버는 커스터디 자산·읽기 전용 Cosmos 프록시·동일 origin의 제한된 broadcast만 제공합니다. 웹은 privacy 키·노트·witness를 보관하거나 기존 `app.bundle.js`를 로드하지 않습니다. 전송·출금·disclosure는 미지원이며 비활성화 상태입니다.
 
-공개 계정·잔액·sync, 전송·출금·선택적 공개 host RPC는 아직 구현되지 않았습니다. 전송·출금·공개 버튼은 비활성입니다. Capability와 정확한 네트워크 profile digest를 확인하고 legacy 방식으로 fallback하지 않습니다. 서버는 커스터디 asset, 읽기 전용 Cosmos RPC/REST proxy, 동일 origin JSON broadcast endpoint만 제공합니다. 생성된 bundle·profile·빌드 증거는 ignored 로컬 파일입니다.
-
-새 화면 테스트는 합성 RPC·지갑 응답을 사용하며 기존 Keplr/MetaMask 실제 입금 검증을 이 수동 UI까지 확대하지 않습니다. 운영 릴리스·전체 custody 보안 검증 완료를 의미하지 않습니다.
+`test:custody:host`는 실제 빌드된 React 화면·확장·Argon2 금고·백업 검증·로컬 노드로 두 체인의 연결 승인, 검증된 0 잔액, export 전 입금 취소를 확인합니다. 일반 지갑은 합성 actor이며 서명·송금은 실패 처리합니다. 실제 Keplr/MetaMask 입금 재검증이나 production 보안 검증을 대신하지 않습니다.
 
 ## 시작하기: 체인을 준비하고 웹 설정하기
 
