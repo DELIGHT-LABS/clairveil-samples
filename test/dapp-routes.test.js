@@ -524,7 +524,12 @@ test("DApp exposes config, health, and bundled frontend assets", async () => {
     assert.match(csp, /http:\/\/127\.0\.0\.1:1317/);
     assert.match(csp, /http:\/\/127\.0\.0\.1:2317/);
     assert.match(csp, /http:\/\/127\.0\.0\.1:8080/);
-    assert.match(await appBundle.text(), /createClairveilBrowserDappClient/);
+    const mainBundle = await appBundle.text();
+    assert.match(mainBundle, /Request custody connection/);
+    assert.match(mainBundle, /Sign approved step in chain wallet/);
+    assert.doesNotMatch(mainBundle, /createClairveilBrowserDappClient/);
+    assert.equal((await fetch(`${baseUrl}/custody`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/custody.html`)).status, 404);
 
     const removedEventsProxy = await fetch(`${baseUrl}/api/events`);
     assert.equal(removedEventsProxy.status, 404);

@@ -8,11 +8,11 @@
   },
   "scripts": {
     "link:clairveiljs": "node tools/clairveiljs-worktree.mjs link",
-    "build:dapp": "npm run link:clairveiljs && esbuild public/dapp-entry.jsx --bundle --format=esm --platform=browser --target=es2022 --preserve-symlinks --define:process.env.NODE_ENV=\\\"production\\\" --outfile=public/app.bundle.js",
-    "start": "npm run build:dapp && node server.js",
-    "dev": "npm run build:dapp && node server.js",
-    "start:local": "./scripts/dapp-local.sh",
-    "check:dapp": "npm run link:clairveiljs && npm run check:bundle:fresh && node --check server.js && node --check server-profile-config.js && node --check server-relay-submission.js && node --check public/app.js && node --check public/bounded-json-fetch.js && node --check public/browser-profile.js && node --check public/browser-storage-scope.js && node --check public/browser-task-coordinator.js && node --check public/privacy-browser-storage.js && node --check public/cosmos-fee.js && node --check public/cosmos-flow-state.js && node --check public/cosmos-sign-options.js && node --check public/cosmos-transaction-evidence.js && node --check public/dapp-config.js && node --check public/deposit-funding.js && node --check public/deposit-proof-ui.js && node --check public/minimal-denom-input.js && node --check public/note-asset-inventory.js && node --check public/network-fee.js && node --check public/encrypted-reservation-manager.js && node --check public/encrypted-operation-store.js && node --check public/operation-event-lookup.js && node --check public/public-pending-tx-store.js && node --check public/relay-reservation-state.js && node --check public/relay-submission-coordinator.js && node --check public/relay-withdraw-reconciliation.js && node --check public/reservation-reconciliation.js && node --check public/reservation-recovery.js && node --check public/value-moving-action.js && node --check public/withdraw-operation-evidence.js && node --check public/disclosure-view-model.js && node --check tools/verify-production-deployment.mjs && node --check tools/clairveiljs-worktree.mjs && node --check public/app.bundle.js",
+    "build:dapp": "node tools/build-dapp.mjs",
+    "start": "npm run build:dapp:local && node server.js --port 4320",
+    "dev": "npm run build:dapp:local && node server.js --port 4320",
+    "start:local": "npm start",
+    "check:dapp": "npm run link:clairveiljs && npm run check:bundle:fresh && node --check server.js && node --check server-profile-config.js && node --check server-relay-submission.js && node --check public/app.js && node --check public/bounded-json-fetch.js && node --check public/browser-profile.js && node --check public/browser-storage-scope.js && node --check public/browser-task-coordinator.js && node --check public/privacy-browser-storage.js && node --check public/cosmos-fee.js && node --check public/cosmos-flow-state.js && node --check public/cosmos-sign-options.js && node --check public/cosmos-transaction-evidence.js && node --check public/dapp-config.js && node --check public/deposit-funding.js && node --check public/deposit-proof-ui.js && node --check public/minimal-denom-input.js && node --check public/note-asset-inventory.js && node --check public/network-fee.js && node --check public/encrypted-reservation-manager.js && node --check public/encrypted-operation-store.js && node --check public/operation-event-lookup.js && node --check public/public-pending-tx-store.js && node --check public/relay-reservation-state.js && node --check public/relay-submission-coordinator.js && node --check public/relay-withdraw-reconciliation.js && node --check public/reservation-reconciliation.js && node --check public/reservation-recovery.js && node --check public/value-moving-action.js && node --check public/withdraw-operation-evidence.js && node --check public/disclosure-view-model.js && node --check tools/verify-production-deployment.mjs && node --check tools/clairveiljs-worktree.mjs && node --check public/custody-runtime.js && node --check public/custody-session.js && node --check public/custody-state.js && node --check public/sample-custody-app.js && node --check public/sample-chain-actions.js && node --check server-custody-proxy.js && node --check tools/build-dapp.mjs && node --check public/app.bundle.js && node --check tools/custody-sdk.mjs",
     "check:bundle": "git diff --exit-code -- public/app.bundle.js",
     "check:bundle:fresh": "npm run link:clairveiljs && node tools/check-bundle-fresh.js",
     "test:dapp": "npm run link:clairveiljs && node --test test/*.test.js",
@@ -25,16 +25,15 @@
     "verify:production-deployment": "npm run link:clairveiljs && node tools/verify-production-deployment.mjs",
     "verify:release": "npm run check:dapp && npm run test:dapp && npm run check:clairveiljs && npm run test:clairveiljs && npm run test:release-contracts",
     "verify:release:integration": "npm run verify:release && npm run test:e2e:local && npm run test:e2e:evm-payable",
-    "build:custody": "node tools/build-custody.mjs",
-    "start:custody": "npm run build:custody && node tools/serve-custody.mjs",
-    "test:custody": "node --test test/custody-*.test.js",
-    "test:custody:host": "node tools/check-custody-host.mjs"
+    "test:custody": "node --test test/custody-*.test.js test/dapp-custody.test.js",
+    "build:dapp:local": "node tools/build-dapp.mjs --local-host"
   },
   "dependencies": {
     "clairveiljs": "file:../clairveiljs",
     "ethers": "^6.16.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "@clairveil/custody-sdk": "file:vendor/clairveiljs-custody-0.3.1.tgz"
   },
   "overrides": {
     "ws": "^8.20.1"

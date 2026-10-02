@@ -37,6 +37,33 @@ test("bounded JSON fetch returns a direct valid JSON response", async () => {
   assert.deepEqual(value, { height: "7" });
 });
 
+test("bounded JSON errors expose validated response evidence only when requested", async () => {
+  const body = { checkTxRejected: true, txCode: 5 };
+  const fetchImpl = async () => jsonResponse(body, { status: 400 });
+  await assert.rejects(fetchBoundedJson(endpoint, { fetchImpl }), error =>
+    /HTTP 400/.test(error.message) && error.responseBody === undefined);
+  await assert.rejects(fetchBoundedJson(endpoint, { fetchImpl, includeErrorBody: true }), error =>
+    error.httpStatus === 400 && assert.deepEqual(error.responseBody, body) === undefined);
+});
+
+test("error response evidence remains subject to URL, type, byte and time bounds", async () => {
+  for (const init of [
+    { url: 'https://other.example.com/error' },
+    { headers: { 'content-type': 'text/plain' } },
+    { headers: { 'content-length': '2048' } }
+  ]) {
+    await assert.rejects(fetchBoundedJson(endpoint, { includeErrorBody: true, maxBytes: 32,
+      fetchImpl: async () => jsonResponse({ checkTxRejected: true }, { status: 400, ...init }) }), error => error.responseBody === undefined);
+  }
+  for (const body of ['{', JSON.stringify({ value: 'x'.repeat(64) }), new ReadableStream({ start() {} })]) {
+    await assert.rejects(fetchBoundedJson(endpoint, { includeErrorBody: true, maxBytes: 32, timeoutMs: 20,
+      fetchImpl: async () => {
+        const response = new Response(body, { status: 400, headers: { 'content-type': 'application/json' } });
+        Object.defineProperty(response, 'url', { value: endpoint }); return response;
+      } }), error => error.responseBody === undefined);
+  }
+});
+
 test("bounded JSON fetch times out stalled headers and stalled bodies", async () => {
   await assert.rejects(
     () => fetchBoundedJson(endpoint, {

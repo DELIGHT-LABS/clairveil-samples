@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request } from 'node:http';
-import { createCustodyPreviewServer } from '../tools/serve-custody.mjs';
+import { createSamplePreviewServer } from '../server-custody-proxy.js';
 
 async function fixture(t, respond = () => new Response('{"ok":true}')) {
   const calls = [];
-  const server = createCustodyPreviewServer({ fetchImpl: async (...args) => { calls.push(args); return respond(...args); } });
+  const server = createSamplePreviewServer({ fetchImpl: async (...args) => { calls.push(args); return respond(...args); } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
   function send(path, { method = 'GET', body, headers = {} } = {}) {
@@ -19,12 +19,12 @@ async function fixture(t, respond = () => new Response('{"ok":true}')) {
   return { send, calls };
 }
 
-test('preview serves isolated custody HTML and rejects unrelated files and hostile Host', async t => {
+test('main sample serves its existing HTML and rejects unrelated files and hostile Host', async t => {
   const f = await fixture(t);
-  const response = await f.send('/'); assert.equal(response.status, 200); assert.match(response.body, /custody.bundle.js/); assert.doesNotMatch(response.body, /src="\/app.bundle.js/);
-  assert.equal((await f.send('/custody')).body, response.body);
-  assert.equal((await f.send('/custody.html')).body, response.body);
-  assert.equal((await f.send('/app.bundle.js')).status, 404);
+  const response = await f.send('/'); assert.equal(response.status, 200); assert.match(response.body, /app.bundle.js/); assert.doesNotMatch(response.body, /custody.bundle.js/);
+  assert.equal((await f.send('/custody')).status, 404);
+  assert.equal((await f.send('/custody.html')).status, 404);
+  assert.equal((await f.send('/custody.bundle.js')).status, 404);
   assert.equal((await f.send('/../../package.json')).status, 404);
   assert.equal((await f.send('/', { headers: { host: 'attacker.example' } })).status, 403);
 });

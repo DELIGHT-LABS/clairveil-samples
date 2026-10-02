@@ -1,48 +1,51 @@
 # Clairveil DApp
 
-Clairveil DApp은 브라우저에서 Keplr 또는 MetaMask를 연결해 Clairveil privacy 기능을 테스트하는 예제 웹앱입니다.
+영문 버전: [README.md](./README.md)
 
-이 예제의 핵심 경계는 단순합니다.
+메인 샘플 `/`의 기존 Wallet Session, Clair, Veiled, Privacy Events 레이아웃에서 Clairveil Custody로 개인정보 작업을 처리합니다. 별도 커스타디 화면이나 실행 명령은 없습니다. Keplr/MetaMask는 일반 체인 계정과 공개 거래 서명을, 확장은 개인정보 키·노트·승인·노트 선택·예약·증명을 담당합니다.
 
-- **DApp**: 입력값과 UI 흐름만 관리하고, ClairveilJS high-level API를 호출합니다.
-- **ClairveilJS**: note 생성, commitment/encrypted note, scan, note planning, prover payload, disclosure encode/decode, deposit/transfer/withdraw 준비를 처리합니다.
-- **Optional local server**: 로컬 테스트용 static server, faucet, local signer, auditor/admin helper만 제공합니다.
+## 메인 샘플 빌드와 실행
 
-Public node 환경에서는 static DApp + ClairveilJS + 공개 RPC/REST + 검토된 prover가 필요합니다. Cosmos profile은 기본적으로 `{proverUrl}/v1/prover/deposit`의 Core v0.4.0 canonical DepositCircuit route를 사용하고 exact canonical endpoint 또는 local/WASM provider로 override할 수 있습니다. EVM profile은 별도로 설정한 기존 deposit provider contract를 유지합니다. DApp backend 자체는 필수가 아닙니다.
+Node 22.16 이상을 사용하고 `npm ci`로 샘플 의존성을 준비하세요. `npm run build:dapp`, 번들 최신성 검사와 합성 테스트는 `vendor/`에 포함한 고정 SDK archive를 `@clairveil/custody-sdk`로 설치해 사용하므로 custody 체크아웃이나 실행 중인 체인이 필요하지 않습니다. `vendor/custody-sdk.json`에 SHA-512 무결성과 upstream 소스 출처를 기록합니다. 커스타디가 고정한 것과 동일한 미출시 SDK 스냅샷이며 새 SDK 구현이나 배포 버전이 아닙니다. archive에 Apache-2.0 라이선스가 포함되어 있습니다.
 
-## React 샘플 화면
-
-두 화면은 React + JSX를 esbuild로 각각 번들링합니다. 일반 샘플은 `public/dapp-entry.jsx` → `public/dapp-view.jsx`, 커스터디 샘플은 `public/custody-entry.jsx` → `public/custody-view.jsx`가 진입점입니다. HTML 파일은 root와 스크립트를 담는 부트스트랩만 담당합니다. 기존 CSS와 실행 명령은 유지합니다.
-
-일반 샘플의 JSX는 Wallet Session, Clair, Veiled, Relay Withdraw, Events, Auditor 등의 컴포넌트로 나뉩니다. 기존 `public/app.js`의 거래·복구 컨트롤러는 React의 최초 DOM commit 이후 문서당 한 번 시작하며, 기존 DOM 갱신·이벤트 처리를 유지합니다. 따라서 일반 샘플은 모든 상태를 React 훅으로 재작성한 구조가 아니며, 이 화면을 재마운트하거나 클라이언트 라우팅으로 교체하지 않습니다. 커스터디는 React state/effect가 세션 상태를 렌더링하고 네트워크 변경·unmount·pagehide에서 구독·polling·RPC 자원을 정리합니다. 자동 연결이나 자동 서명은 하지 않습니다.
-
-기본 진입 주소는 일반 샘플 `http://127.0.0.1:5173/`, 커스터디 `http://127.0.0.1:4320/custody`입니다. 커스터디 서버는 `/`와 `/custody.html`도 호환 경로로 제공합니다. 서버 origin과 체인 프로필은 기존대로 분리합니다. 테스트는 JSX를 실제 렌더링해 기존 화면 검증을 수행하고, `test/custody-react.test.js`에서 실제 세션 모듈과 합성 지갑/RPC를 연결해 승인·서명 분리, 불명확한 결과 차단, 무효화·자원 정리를 확인합니다. 실제 지갑 E2E 검증을 대신하지 않습니다.
-
-## 커스터디 미리보기 (CC-004 로컬 호스트)
-
-`/custody`는 현재 CC-004의 고정 SDK와 `extension-v1` raw JSON 채널을 사용합니다. `npm run start:custody`는 형제 `clairveil-custody`에서 `custody:local-build`를 실행하고 `.spike-build/cc004-host`의 빌드 증거·프로필을 확인해 웹을 빌드합니다. SDK 패키지는 그 저장소의 `tests/custody/sdk-package.json`이 소유합니다. 기본 consumer는 `.spike-build/cc004-consumer/node_modules`이며 `CC003_CONSUMER_DIR` / `CC003_SDK_TARBALL`은 동일 바이트의 위치만 변경합니다. 이전 CC-002 bridge·고정 암호 설정 UI로 fallback하지 않습니다.
-
-사전 조건은 준비된 CC-004 SDK archive/consumer와 실행 중인 기존 로컬 체인·prover입니다. 빌드는 SDK를 설치·배포하거나 체인을 시작·초기화·충전하지 않습니다. 기존 `cc002-local-1` Cosmos와 `maroo-zerofee-2` EVM 로컬 서비스를 그대로 사용하되, 네트워크 digest는 CC-004 배포 프로필에서 가져옵니다.
+로컬 지갑 테스트를 하려면 먼저 형제 `clairveil-custody` 저장소의 `.spike-build/cc007-host` 후보와 기존 로컬 체인·prover를 준비합니다. 일회용 Chrome/Chromium 프로필에 해당 `extension` 디렉터리와 Keplr 또는 MetaMask를 로드하세요. 호스트 SDK 고정값은 커스타디 저장소의 `tests/custody/sdk-package.json`이 계속 소유하며, 로컬 시작 시 샘플 archive와 일치해야 합니다.
 
 ```bash
-npm run start:custody
-# 별도 터미널: 합성 RPC/React 회귀 테스트
+npm start
+# 메인 샘플: http://127.0.0.1:4320/
+# 합성 bridge·session·메인 화면·프록시 통합 회귀 검사:
 npm run test:custody
-# 빌드 후: 실제 확장·샘플 화면, 합성 일반 지갑, 서명/송금 없음
-npm run test:custody:host
+# 전체 샘플 회귀 검사:
+npm run test:dapp
 ```
 
-1. 별도 테스트용 Chrome/Chromium 프로필(기준 Chromium 153)에 `../clairveil-custody/.spike-build/cc004-host/extension`을 로드하고 Keplr 또는 MetaMask를 준비합니다. 빌드 갱신 뒤에는 확장과 웹 탭을 다시 로드하세요.
-2. 확장 작업창에서 금고를 생성하거나 잠금 해제하고, 독립 백업을 저장·검증한 뒤 선택한 체인의 “로컬 노드 신뢰·활성화”를 승인합니다. 과거 CC-002 공개 지갑 JSON 붙여넣기나 고정 테스트 암호는 사용하지 않습니다.
-3. `http://127.0.0.1:4320/custody`에서 네트워크와 일반 지갑을 연결합니다. Cosmos 공개키는 연결 요청에 자동 포함됩니다. 필요하면 “잔액 조회 권한도 요청”을 선택하고 커스터디 연결을 요청한 뒤 확장에서 승인합니다.
-4. 1~999 최소 단위 입금을 요청하고 확장에서 privacy·prover 공개를 승인합니다. 웹에서 일반 지갑 서명을 명시적으로 실행하고 체인 결과를 확인합니다. host의 `confirmed`만 완료로 표시합니다.
-5. 잔액 권한을 승인했다면 작업창에서 “스캔·잔액 새로고침” 후 웹에서 “잔액 조회”를 누릅니다. 표시값은 최근 응답의 스냅샷이며, host가 `current` + `verified`로 반환한 행만 금액을 표시합니다. unknown/incomplete를 0으로 표시하지 않습니다. 검증 유효시간은 관측 후 최대 30초이므로 오래됐으면 작업창에서 다시 스캔하세요. 공개 `sync`는 아직 지원하지 않습니다.
+`npm start` / `npm run dev` / `npm run start:local`은 `public/dapp-entry.jsx` → 기존 `public/dapp-view.jsx`와 `public/sample-custody-app.js`를 빌드하고 `server.js`로 기존 `public/index.html`, `styles.css`를 제공합니다. 이 실행 명령들은 `build:dapp:local` (`tools/build-dapp.mjs --local-host`)을 사용해 호스트 manifest·기록된 모든 파일·고정 SDK archive·설치 SDK·consumer lock·소스 patch를 확인한 뒤 공개 custody-provider·dapp·chain-wallet export를 번들링합니다. 아티팩트가 없거나 다르면 빌드를 중단합니다. `CLAIRVEIL_CUSTODY_DIR`, `CC003_CONSUMER_DIR`, `CC003_SDK_TARBALL`은 같은 고정 바이트의 위치만 옮길 수 있습니다. 이 명령은 형제 호스트 재빌드, SDK 설치, 체인 시작·초기화, 계정 충전을 하지 않습니다.
 
-작업창 잠금·종료나 권한 상실은 host에서 새 제출을 차단합니다. CC-004에는 CC-002의 별도 준비 상태 probe가 없으므로 읽기 전용 capabilities RPC로 지원 여부를 확인하며, 잠금·미활성화·응답 시간 초과를 안내합니다. 연결·입금·제출 결과가 불명확하면 자동 재시도하지 않습니다. 작업창 재시작 후 과거 작업 복구 및 백업 복원 제한은 host 작업창에서 확인하세요. 샘플에는 recovery-only 연결 UI가 아직 없습니다.
+`start:local`도 이미 준비된 서비스를 사용하는 같은 커스타디 샘플을 엽니다. 과거 체인 초기화 runner를 호출하지 않습니다.
 
-React UI는 `public/custody-view.jsx`, 자원 생명주기는 `public/custody-app.js`, 일반 지갑은 `public/custody-wallet.js`, 요청 권한과 작업 상태는 `public/custody-session.js`가 담당합니다. 서버는 커스터디 자산·읽기 전용 Cosmos 프록시·동일 origin의 제한된 broadcast만 제공합니다. 웹은 privacy 키·노트·witness를 보관하거나 기존 `app.bundle.js`를 로드하지 않습니다. 전송·출금·disclosure는 미지원이며 비활성화 상태입니다.
+현재 호스트의 origin 허용 정책 때문에 4320 포트를 사용합니다. 메인 화면은 `/`이며 `/custody`, `/custody.html`은 404입니다. 별도 커스타디 HTML·React·CSS, 번들 빌더·서버·화면 전용 검증 명령을 제거했습니다. 기본 브라우저 번들은 `public/app.js`, wallet-kernel, 페이지 개인정보 파생, 암호화 노트 저장소를 포함하지 않으며 페이지 개인정보 root 서명으로 대체하지 않습니다. 남아 있는 기존 컨트롤러와 테스트는 과거 소스 검증이며 메인 브라우저 진입점이 아닙니다.
 
-`test:custody:host`는 실제 빌드된 React 화면·확장·Argon2 금고·백업 검증·로컬 노드로 두 체인의 연결 승인, 검증된 0 잔액, export 전 입금 취소를 확인합니다. 일반 지갑은 합성 actor이며 서명·송금은 실패 처리합니다. 실제 Keplr/MetaMask 입금 재검증이나 production 보안 검증을 대신하지 않습니다.
+## 기존 샘플 컨트롤로 테스트
+
+1. 확장에서 금고 생성·잠금 해제, 독립 백업 저장·검증, 선택한 로컬 네트워크 신뢰·활성화를 완료합니다.
+2. **Wallet Session**에서 Cosmos/EVM을 선택하고 Keplr/MetaMask를 연결합니다. 전체 흐름 테스트에는 주소·잔액·전송·출금·공개 권한 체크박스를 명시적으로 선택하고 **Request custody connection**을 눌러 확장에서 승인합니다. 연결은 개인정보 root를 서명하지 않습니다. **Read approved privacy address**로 승인된 shielded 주소를 조회합니다.
+3. **Clair**의 입금 수량에 프로토콜 uint64 범위인 정수 1–18446744073709551615 최소 단위를 입력하고 **Request deposit approval**을 누릅니다. 커스타디에서 목적지·수량·원격 prover witness 공개를 검토합니다. 작업 영역에서 승인·증명 진행 상황을 확인하고 구체 단계가 준비되면 **Sign approved step in chain wallet**을 명시적으로 누릅니다. 커스타디의 `confirmed`만 검증된 체인 효과를 의미하며 지갑 해시만으로 완료를 표시하지 않습니다.
+4. **Veiled**에서 확장의 trusted scan을 새로고침하고 **Read custody balance**를 누릅니다. current·verified 합계 응답만 수량을 표시하며 unknown/incomplete는 0이 아닙니다. 원시 노트·스캔 캐시·개인 백업은 확장에 남습니다.
+5. 기존 전송 수량·shielded 수신자를 입력하고 **Request transfer approval**을 누릅니다. 비어 있는 전송 수신자는 처음에 승인된 자기 주소를 사용하지만 입력한 수신자는 보존합니다. None/Public/Recipient encrypted 모드, Amount/From/To 공개 필드, 수신자 공개 키와 self-view 체크박스를 명시적 intent에 전달합니다. Advanced를 끄면 숨겨진 입력에 이전 공개·암호화 설정이 남아 있어도 항상 `all-private`/`none`으로 요청하며, 별도의 self-view 선택은 유지합니다. 잘못된 정책이나 키는 제출 전에 고정된 SDK 스키마로 거절합니다. 0 입금 보조·자기 병합·최종 전송의 각 단계는 별도 확장 승인과 일반 지갑 제출이 필요하며 보조 단계 확인이 상위 전송 완료는 아닙니다. 출금은 입력한 일반 수신자를 보존합니다. 정확한 금액의 노트가 없어 커스터디가 승인 데이터 발급·제출 전에 `4202`를 반환하면 **Request exact-note preparation**으로 승인된 자기 shielded 주소에 해당 금액의 비공개 전송을 명시적으로 요청합니다. 준비 단계마다 별도로 승인·서명합니다. 상위 준비 전송 전체가 커스터디에서 확인되면 **Resume withdrawal approval**으로 출금을 다시 요청합니다. 중간에 폼을 편집해도 원래 금액과 수신자를 사용합니다. 폴링은 준비나 출금 재개를 자동 실행하지 않습니다. 다른 체인 작업의 실패, 이미 발급된 승인과 결과가 불명확한 요청은 제출 차단을 유지합니다.
+6. **Privacy Events**에서 **Next events** / **Previous events**로 오래된 이벤트부터 30건씩 탐색합니다. **Refresh Events**는 현재 페이지를 갱신합니다. 조회 실패 시 현재 페이지를 유지하고 네트워크 변경 시 대기 중인 페이지 응답을 폐기합니다. 목록의 이벤트를 선택하거나 확인된 전송 해시(EVM은 Ethereum `0x` 해시)를 입력한 뒤 User/Self-view를 선택합니다. 직접 입력한 해시는 `0x` 접두사 유무와 관계없이 제출 전에 Cosmos는 접두사 없는 소문자 hex, EVM은 `0x`가 붙은 소문자 hex로 정규화합니다. 잘못된 해시는 작업 생성이나 후속 요청 차단 없이 로컬에서 거절합니다. EVM에는 Cosmos envelope 해시가 아닌 Ethereum 거래 해시를 입력해야 합니다. EVM 이벤트를 선택하면 크기·시간을 제한한 읽기 전용 체인 조회로 Cosmos envelope 해시를 별개의 Ethereum 해시에 연결합니다. 연결이 없거나 모호하거나 실패하면 요청을 비활성화합니다. 이벤트 선택만으로 공개를 요청하지 않습니다. **Fields to request**에서 Amount·From·To 중 조회할 필드를 선택합니다. 기존 공개 버튼은 trusted preview·release 승인을 포함하여 선택한 필드만 커스터디에 요청합니다. 초기 선택은 Amount이며, 금액 없이 From 또는 To만 공개된 거래도 해당 필드만 요청할 수 있습니다. 아무 필드도 선택하지 않으면 요청하지 않습니다. 페이지에서 공개 scalar나 원시 event/witness 입력으로 복호화하지 않습니다. 페이지 전달 또는 trusted-wallet 전용 표시를 선택할 수 있습니다. 승인·검증된 page 전달 결과는 작업·거래·공개 영역·전달 대상·필드가 현재 선택과 일치할 때만 선택한 값과 검증 정보를 표시합니다. 이벤트·직접 입력한 해시·공개 영역·전달 대상·필드를 바꾸면 공개된 값을 모두 지우고 늦은 응답도 차단하며, 이전 선택으로 되돌려도 과거 결과를 다시 표시하지 않습니다.
+7. 재시작 뒤 기존 작업을 조회하려면 연결 전에 Wallet Session에 공개 작업 ID를 입력합니다. 고정된 SDK가 제출 전에 ID의 정규 인코딩과 중복을 검증하므로 입력 오류는 즉시 수정해 다시 요청할 수 있습니다. 새 복구 동의는 작업 생성·제출 권한을 주지 않습니다. 복구 금고는 지원 프로필에서 새 입금을 허용할 수 있지만 이전·새 노트 지출 제한은 유지됩니다. 백업 검증이나 스캔으로 해제되지 않습니다.
+
+일반 투명 잔액·송금 컨트롤은 개인정보 동의와 별개입니다. **Disconnect**는 일반 지갑만 연결했거나 커스터디 작업이 정리된 세션을 초기화하고 새로고침 없이 지갑·네트워크 선택으로 돌아갑니다. 연결·공개 조회 작업의 실패 또는 만료가 확정되었고 체인 승인 데이터나 제출 시도가 없으면 연결 해제와 일반 송금도 허용합니다. 연결 거절 후에는 권한·복구 ID를 수정하여 새 연결을 명시적으로 요청할 수 있고, 공개 조회 실패 후에는 입력을 고쳐 다시 조회하거나 권한이 있는 다른 개인정보 작업을 요청할 수 있습니다. 자동 재시도는 하지 않으며, 요청 결과가 불명확하면 차단을 유지합니다. 미확정 커스터디 작업이 있으면 연결 해제·초기화를 막고 작업 ID와 제출 상태를 보존하여 먼저 확인하도록 합니다. 공개 송금의 미확정 기록은 연결 해제·재연결 뒤에도 유지합니다. 공개 송금, 커스터디 작업 생성·제출 요청과 공개 송금 확인은 체인 계정별 배타적 브라우저 Web Lock을 공유합니다. 각 동작은 잠금 안에서 저장된 미확정 송금을 다시 읽으며, 다른 탭이 사용 중이면 지갑 호출을 대기열에 넣지 않습니다. storage/focus 이벤트로 다른 탭의 화면도 갱신합니다. 공개 송금 시도는 EVM 지갑 제출 또는 Cosmos 브로드캐스트 직전에 저장합니다. 입력 오류, 사전 조회 실패, Cosmos 서명 실패와 명시적인 EIP-1193 사용자 거절은 미확정 기록을 남기지 않습니다. 일반 Cosmos 송금은 높이 0의 CheckTx 응답이 SDK 잔액·수수료 부족 코드(5/13)이고 해시가 제출한 바이트와 일치할 때만 미확정 기록을 지웁니다. 이후 사용자가 명시적으로 재시도할 수 있습니다. 중복 캐시·시퀀스 오류, 알 수 없는 오류, 잘못된 응답과 해시 불일치는 미확정으로 유지합니다. Cosmos 거래 해시는 서명한 바이트에서 계산해 브로드캐스트 전에 저장합니다. 응답 유실·중복·해시 불일치에도 새로고침 후까지 해당 해시를 보존하며, **Reconcile send tx**은 저장한 해시로 조회해 일치하는 체인 포함을 확인한 뒤에만 차단을 해제합니다. 결과가 불명확하면 확인 전까지 차단을 유지하며 자동 재시도하지 않습니다. 공개 제출에는 Web Locks와 쓰기 가능한 localStorage가 필요합니다. 로컬 signer·auditor·relay payload·개인 캐시 UI는 현재 공개 개인정보 RPC 프로필 범위에 없어 커스타디 화면에서 제외합니다.
+
+연결·복구·전송·출금·공개 intent는 제출 및 미확정 요청 상태 진입 전에 고정된 SDK 스키마로 검증합니다. 로컬에서 거절된 shielded 주소는 새로고침 없이 수정할 수 있고, 제출 이후 오류에는 미확정 차단을 유지합니다. 네트워크·계정 변경, 잠금·무효화, pagehide는 늦은 응답을 차단하고 세션·provider 자원을 정리합니다. 폴링은 작업 조회만 하며 연결·승인 요청·서명을 하지 않습니다. 동일 origin Cosmos 프록시는 제한된 읽기와 한 번의 제한된 broadcast를 제공하고 broadcast를 재시도하지 않습니다. 다른 로컬 서버 helper는 별도로 켜는 기존 백엔드 기능이며 메인 화면 개인정보 실행 경로가 아닙니다.
+
+**Faucet**은 `/api/config`에서 기능이 활성화되어 있고 transport·체인·denom이 선택한 커스터디 프로필과 일치할 때 기존 동일 origin `/api/faucet`을 호출합니다. 기존 로컬 테스트 백엔드를 해당 체인으로 설정해 활성화해야 하며 샘플이 자동으로 기능을 켜거나 자금을 지급하지 않습니다. 표시 단위의 소수 수량을 정확한 최소 단위 정수로 변환합니다. 사용자가 명시적으로 요청할 때 연결된 일반 지갑에 지급하며 계정별 제출 잠금을 공유합니다. 결과가 불명확한 요청은 탭·재연결·새로고침을 넘어 보존하고 자동 재시도하지 않습니다. 크기·시간·동일 origin 제한을 적용한 HTTP 오류 본문에서 CheckTx 근거를 보존합니다. Cosmos SDK 잔액·수수료 부족 거절(코드 5/13, 높이 0, 유효한 거래 해시)이 명확할 때만 차단을 해제하여 사용자가 다시 요청할 수 있습니다. 중복·시퀀스 오류 등 불명확한 CheckTx 응답은 해시를 새로고침 후에도 유지합니다. 일반 HTTP 오류·잘못된 본문·응답 유실은 차단을 유지합니다. 저장된 해시가 있으면 **Check faucet transaction**으로 체인에서 확인합니다. 응답이 유실되어 해시도 없으면 로컬 signer에서 직접 확인해야 합니다. 로컬 signer·auditor 관리 기능은 메인 화면에 포함하지 않습니다.
+
+생성된 `custody-build.json`은 메인 화면 asset·공개 입력·정확한 호스트/SDK 바이트를 묶습니다. 제거한 별도 화면의 호스트 증거로 통합 페이지를 검증했다고 간주할 수 없습니다. 합성 테스트·스키마/빌드 검사·HTTP smoke는 실제 Keplr/MetaMask 거래 E2E, 독립 브라우저 키 격리/보안 검토, 운영 릴리스 준비와 별개이며 새 페이지 기준으로 다시 검증해야 합니다.
+
+## 기존 체인·서버 참고 자료
+
+아래 내용은 남아 있는 기존 컨트롤러·서버 기능과 과거 체인 설정을 설명합니다. 메인 커스타디 사용 순서가 아닙니다. 체인·프로필 설정 변경은 고정 커스타디 호스트를 갱신하지 않으며 기본 페이지는 `public/app.js`를 로드하지 않습니다. 활성 커스타디 금고·작업 아래의 체인을 초기화하지 마세요. 현재 연동 테스트에는 커스타디 저장소의 호스트 준비 안내를 따릅니다.
 
 ## 시작하기: 체인을 준비하고 웹 설정하기
 

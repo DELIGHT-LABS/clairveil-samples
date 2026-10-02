@@ -1,46 +1,11 @@
-import { build } from "esbuild";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const dappRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const temporaryDirectory = await mkdtemp(join(tmpdir(), "clairveil-dapp-bundle-"));
-const generatedBundle = join(temporaryDirectory, "app.bundle.js");
-const committedBundle = join(dappRoot, "public", "app.bundle.js");
-
+import { buildDapp } from './build-dapp.mjs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'clairveil-dapp-bundle-'));
 try {
-  await build({
-    absWorkingDir: dappRoot,
-    entryPoints: ["public/dapp-entry.jsx"],
-    bundle: true,
-    format: "esm",
-    platform: "browser",
-    target: "es2022",
-    preserveSymlinks: true,
-    define: { "process.env.NODE_ENV": '"production"' },
-    outfile: generatedBundle,
-    logLevel: "silent",
-  });
-  const [expected, generated] = await Promise.all([
-    readFile(committedBundle),
-    readFile(generatedBundle),
-  ]);
-  const machineSpecificRoots = await Promise.all([
-    realpath(dappRoot),
-    realpath(join(dappRoot, "node_modules", "clairveiljs")),
-  ]);
-  const expectedText = expected.toString("utf8");
-  for (const root of machineSpecificRoots) {
-    if (expectedText.includes(root.replaceAll("\\", "/"))) {
-      throw new Error(
-        "public/app.bundle.js contains a machine-specific source path; rebuild it with npm run build:dapp.",
-      );
-    }
-  }
-  if (!expected.equals(generated)) {
-    throw new Error("public/app.bundle.js is stale; run npm run build:dapp and commit the updated bundle.");
-  }
-} finally {
-  await rm(temporaryDirectory, { recursive: true, force: true });
-}
+  await buildDapp({ outputDirectory: temporaryDirectory });
+  const expected = await readFile(new URL('../public/app.bundle.js', import.meta.url));
+  const generated = await readFile(path.join(temporaryDirectory, 'app.bundle.js'));
+  if (!expected.equals(generated)) throw new Error('public/app.bundle.js is stale; run npm run build:dapp.');
+} finally { await rm(temporaryDirectory, { recursive: true, force: true }); }

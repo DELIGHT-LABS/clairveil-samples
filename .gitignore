@@ -1,7 +1,8 @@
 node_modules/
-public/custody.bundle.js
+
 public/custody-profiles.json
 public/custody-build.json
+.custody-build/
 .env
 .env.*
 !.env.example

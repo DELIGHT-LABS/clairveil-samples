@@ -1,31 +1,31 @@
 import React from "react";
 
 // Mounted once: app.js owns the existing transaction controller and dynamic DOM regions.
-export function DappView() {
+export function DappView({ custody = false }) {
   return (
     <>
 <main className="shell">
-      <DappHeader />
+      <DappHeader custody={custody} />
 
       <ChainSummary />
 
       <section className="workspace">
-        <WalletSession />
+        <WalletSession custody={custody} />
 
-        <ClairPanel />
+        <ClairPanel custody={custody} />
 
-        <VeiledPanel />
+        <VeiledPanel custody={custody} />
 
-        <RelayWithdrawPanel />
+        {!custody && <RelayWithdrawPanel />}
 
-        <PrivacyEvents />
+        <PrivacyEvents custody={custody} />
 
-        <LocalSigner />
+        {!custody && <LocalSigner />}
       </section>
 
-      <AuditorPanel />
+      {!custody && <AuditorPanel />}
 
-      <EventBlocks />
+      {!custody && <EventBlocks />}
     </main>
 
     <NoticeModal />
@@ -35,13 +35,13 @@ export function DappView() {
   );
 }
 
-function DappHeader() {
+function DappHeader({ custody }) {
   return (
     <header className="topbar">
         <div>
           <h1>Clairveil DApp</h1>
           <p id="modeBadge" className="mode-badge">Local Note Test Web</p>
-          <p><a href="http://127.0.0.1:4320/custody">Clairveil Custody 로컬 미리보기</a> <small>별도 실행: npm run start:custody</small></p>
+          <p>{custody ? "Privacy approval and proving: Clairveil Custody · Chain signing: Keplr / MetaMask" : "Legacy page-held privacy sample"}</p>
           <label className="chain-picker">
             <span>DApp chain info</span>
             <select id="dappChainSelect"></select>
@@ -81,15 +81,21 @@ function ChainSummary() {
   );
 }
 
-function WalletSession() {
+function WalletSession({ custody }) {
   return (
     <div className="panel wallet-session-panel">
           <div className="panel-heading">
             <h2>Wallet Session</h2>
             <div className="session-actions">
-              <button id="signSession" type="button" disabled>Sign Session</button>
+              <button id="signSession" type="button" disabled>{custody ? "Request custody connection" : "Sign Session"}</button>
             </div>
           </div>
+          {custody && <>
+            <p className="quiet">Create/unlock the extension vault, verify its independent backup and activate the selected local network before connecting.</p>
+            <label className="checkbox-control"><input id="custodyFullFlow" type="checkbox" /> Request address, balance, transfer, withdraw and disclosure permissions</label>
+            <label className="field"><span>Recovery operation IDs (optional; inspect only)</span><input id="custodyRecoveryIds" placeholder="Public operation IDs, comma separated" /></label>
+            <p id="custodyError" className="inline-warning" role="alert" hidden />
+          </>}
           <dl className="facts wallet-session-facts">
             <div>
               <dt>Wallet</dt>
@@ -107,7 +113,7 @@ function WalletSession() {
               <dd id="walletChain">-</dd>
             </div>
             <div>
-              <dt>Signature</dt>
+              <dt>{custody ? "Custody connection" : "Signature"}</dt>
               <dd id="walletSignatureHash">-</dd>
             </div>
             <div>
@@ -151,9 +157,10 @@ function WalletSession() {
             </div>
           </dl>
           <div className="split-actions">
-            <button id="setupKeplrPrivacy" type="button" disabled>Setup Clairveil</button>
+            <button id="setupKeplrPrivacy" type="button" disabled>{custody ? "Read approved privacy address" : "Setup Clairveil"}</button>
             <button id="refreshKeplrBalance" type="button" disabled>Refresh Balance</button>
           </div>
+          {!custody && <>
           <div className="copy-row">
             <div>
               <span>My disclosure pubkey</span>
@@ -161,6 +168,7 @@ function WalletSession() {
             </div>
             <button id="copyKeplrDisclosurePubKey" type="button" disabled>Copy</button>
           </div>
+          </>}
           <div className="faucet-row">
             <label className="field amount-field">
               <span>
@@ -169,16 +177,18 @@ function WalletSession() {
               </span>
               <div className="amount-control">
                 <input id="keplrFaucetAmount" inputMode="decimal" defaultValue="10" />
-                <span className="denom">CLAIR</span>
+                <span id="faucetDisplayDenom">CLAIR</span>
               </div>
             </label>
             <button id="fundKeplr" type="button" disabled>Faucet</button>
           </div>
+          {custody && <button id="reconcileFaucet" type="button" disabled>Check faucet transaction</button>}
+
         </div>
   );
 }
 
-function ClairPanel() {
+function ClairPanel({ custody }) {
   return (
     <div className="panel keplr-tx-panel">
           <div className="panel-heading">
@@ -236,7 +246,7 @@ function ClairPanel() {
               </label>
               <div className="notes-actions">
                 <button id="cancelDepositProof" className="secondary-button" type="button" hidden disabled>Cancel proof</button>
-                <button id="depositFromKeplr" type="button" disabled>Deposit</button>
+                <button id="depositFromKeplr" type="button" disabled>{custody ? "Request deposit approval" : "Deposit"}</button>
               </div>
             </div>
             <dl className="facts">
@@ -256,20 +266,23 @@ function ClairPanel() {
                 <dt>Note recovery</dt>
                 <dd id="keplrDepositRecovery">Not started</dd>
               </div>
-              <div>
+              {!custody && <>
+            <div>
                 <dt>Network fee</dt>
                 <dd id="keplrDepositNetworkFee">Not estimated</dd>
               </div>
+            </>}
             </dl>
             <div className="notes-actions tx-reconcile-actions">
               <button id="reconcileKeplrDeposit" className="secondary-button" type="button" disabled>Reconcile deposit tx</button>
             </div>
-          </section>
+          </section>          {custody && <CustodyOperation />}
+
         </div>
   );
 }
 
-function VeiledPanel() {
+function VeiledPanel({ custody }) {
   return (
     <div className="panel my-notes-panel">
           <div className="panel-heading">
@@ -277,8 +290,9 @@ function VeiledPanel() {
           </div>
           <section className="balance-section" aria-labelledby="veiledBalanceTitle">
             <div className="balance-heading">
-              <h3 id="veiledBalanceTitle">Veiled balance (Notes)</h3>
+              <h3 id="veiledBalanceTitle">{custody ? "Veiled balance (Custody)" : "Veiled balance (Notes)"}</h3>
               <div className="notes-actions">
+                {!custody && <>
                 <label className="toggle-control">
                   <input id="myKeplrSpendableOnly" type="checkbox" defaultChecked />
                   <span>Unspent only</span>
@@ -287,12 +301,16 @@ function VeiledPanel() {
                   <span>Scan endpoint</span>
                   <select id="noteScanEndpoint" aria-label="Note scan REST endpoint"></select>
                 </label>
-                <button id="scanKeplrNotes" type="button" disabled>Scan</button>
+                </>}
+                <button id="scanKeplrNotes" type="button" disabled>{custody ? "Read custody balance" : "Scan"}</button>
+                {!custody && <>
                 <button id="backupNoteCache" className="secondary-button" type="button" disabled>Backup cache</button>
                 <button id="resetRescanNotes" className="secondary-button" type="button" disabled>Reset &amp; Rescan</button>
+                </>}
               </div>
             </div>
             <p id="noteSyncState" className="quiet note-sync-state">Not scanned</p>
+            {!custody && <>
             <div className="scan-recovery-row">
               <label className="field">
                 <span>Rollback scan height</span>
@@ -316,6 +334,7 @@ function VeiledPanel() {
               </div>
               <div id="reservationRecoveryList" className="reservation-recovery-list"></div>
             </section>
+            </>}
             <div className="note-summary">
               <span>Available to plan</span>
               <strong id="myKeplrSpendable">-</strong>
@@ -338,7 +357,7 @@ function VeiledPanel() {
                   <span className="denom">uclair</span>
                 </div>
               </label>
-              <button id="transferFromVeiled" type="button" disabled>Transfer</button>
+              <button id="transferFromVeiled" type="button" disabled>{custody ? "Request transfer approval" : "Transfer"}</button>
             </div>
             <div className="field address-field">
               <label htmlFor="veiledTransferRecipient"><span>Transfer recipient</span></label>
@@ -402,8 +421,13 @@ function VeiledPanel() {
                   <span className="denom">uclair</span>
                 </div>
               </label>
-              <button id="withdrawFromVeiled" type="button" disabled>Withdraw</button>
+              <button id="withdrawFromVeiled" type="button" disabled>{custody ? "Request withdrawal approval" : "Withdraw"}</button>
             </div>
+            {custody && <div className="notes-actions">
+              <p id="withdrawPreparationState" className="quiet" />
+              <button id="prepareWithdrawNote" type="button" hidden disabled>Request exact-note preparation</button>
+              <button id="resumeWithdraw" type="button" hidden disabled>Resume withdrawal approval</button>
+            </div>}
             <div className="field address-field">
               <label htmlFor="veiledWithdrawRecipient"><span>Withdraw recipient</span></label>
               <div className="address-input-wrap">
@@ -420,10 +444,12 @@ function VeiledPanel() {
                 <dt>Withdraw height</dt>
                 <dd id="keplrWithdrawHeight">-</dd>
               </div>
-              <div>
+              {!custody && <>
+            <div>
                 <dt>Nullifier spent</dt>
                 <dd id="keplrWithdrawNullifier">Not checked</dd>
               </div>
+            </>}
               <div>
                 <dt>Transparent receive</dt>
                 <dd id="keplrWithdrawReceive">Not checked</dd>
@@ -517,13 +543,18 @@ function RelayWithdrawPanel() {
   );
 }
 
-function PrivacyEvents() {
+function PrivacyEvents({ custody }) {
   return (
     <section className="events-section">
           <div className="section-heading">
             <h2>Privacy Events</h2>
             <button id="refreshEvents" type="button">Refresh Events</button>
           </div>
+          {custody && <div className="notes-actions">
+            <button id="previousEventsPage" type="button" disabled>Previous events</button>
+            <span id="eventsPageState" className="quiet" aria-live="polite">Events not loaded</span>
+            <button id="nextEventsPage" type="button" disabled>Next events</button>
+          </div>}
           <div className="events-layout">
             <div id="eventsList" className="events-list"></div>
             <div className="event-detail">
@@ -600,19 +631,32 @@ function PrivacyEvents() {
                   <select id="disclosureSourcePlane">
                     <option value="user">User</option>
                     <option value="self-view">Self-view</option>
-                    <option value="audit">Audit (local admin only)</option>
+                    {!custody && <option value="audit">Audit (local admin only)</option>}
                   </select>
                 </label>
                 <label className="field">
                   <span>Arbitrary tx hash</span>
                   <input id="disclosureSourceTxHash" placeholder="Tx hash outside the current event page" autoComplete="off" />
                 </label>
+                {!custody && <>
                 <label className="field">
                   <span>Pasted disclosure event JSON</span>
                   <textarea id="disclosureSourceEventJson" rows="5" placeholder='{"event_type":"shielded_transfer", ...}'></textarea>
                 </label>
-                <button id="decodeDisclosureSource" type="button">Decode source</button>
-                <p className="quiet">Paste an event JSON to decode it locally, or leave it empty and enter a tx hash.</p>
+                </>}
+                {custody && <>
+                  <div className="field">
+                    <span>Fields to request</span>
+                    <div className="disclosure-checks" role="group" aria-label="Fields to request">
+                      <label className="checkbox-control"><input id="custodyDisclosureAmount" type="checkbox" defaultChecked /><span>Amount + asset</span></label>
+                      <label className="checkbox-control"><input id="custodyDisclosureFrom" type="checkbox" /><span>From shielded address</span></label>
+                      <label className="checkbox-control"><input id="custodyDisclosureTo" type="checkbox" /><span>To shielded address</span></label>
+                    </div>
+                  </div>
+                  <label className="field"><span>Approved disclosure delivery</span><select id="custodyDisclosureDelivery"><option value="page">Selected fields to this page</option><option value="trusted-wallet">Display in custody only</option></select></label>
+                </>}
+                <button id="decodeDisclosureSource" type="button">{custody ? "Request disclosure approval" : "Decode source"}</button>
+                <p className="quiet">{custody ? "Select the fields available in this disclosure, then review and approve their release in the extension." : "Paste an event JSON to decode it locally, or leave it empty and enter a tx hash."}</p>
               </div>
               <p id="eventDisclosureState" className="quiet">Select an event.</p>
             </div>
@@ -833,4 +877,22 @@ function TransferFlowModal() {
       </section>
     </div>
   );
+}
+
+function CustodyOperation() {
+  return <section className="balance-section" aria-live="polite">
+    <h3>Custody operation</h3>
+    <p className="quiet">Enter positive integer base units, up to 18446744073709551615. Every concrete step needs custody approval and a separate chain-wallet signature.</p>
+    <p id="custodyOperationState">No request</p>
+    <p>Operation ID <span id="custodyOperationId">—</span></p>
+    <p id="custodyActiveStep">—</p>
+    <ol id="custodyOperationSteps" />
+    <div className="notes-actions">
+      <button id="custodySubmit" type="button" disabled>Sign approved step in chain wallet</button>
+      <button id="custodyRefresh" type="button" disabled>Refresh operation</button>
+      <button id="custodyCancel" type="button" disabled>Cancel before approval</button>
+    </div>
+    <p id="custodyRecoveryState" className="inline-warning" hidden>Restored vault: funding may be approved, but old and new notes remain spending-restricted. Scan completion does not clear restrictions.</p>
+    <div id="custodyRecoveryOperations" />
+  </section>;
 }

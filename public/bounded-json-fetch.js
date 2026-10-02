@@ -100,7 +100,8 @@ export async function fetchBoundedJson(url, {
   timeoutMs = defaultBoundedJsonTimeoutMs,
   maxBytes = defaultBoundedJsonMaxBytes,
   label = "JSON request",
-  cache = "no-store"
+  cache = "no-store",
+  includeErrorBody = false
 } = {}) {
   if (typeof fetchImpl !== "function") {
     throw new Error(`${label} requires fetch support`);
@@ -128,7 +129,7 @@ export async function fetchBoundedJson(url, {
       signal: controller.signal
     }), controller.signal);
     assertDirectResponse(response, expectedUrl, label);
-    if (!response.ok) {
+    if (!response.ok && !includeErrorBody) {
       throw new Error(`${label} failed with HTTP ${response.status}`);
     }
     const responseType = contentType(response);
@@ -141,11 +142,19 @@ export async function fetchBoundedJson(url, {
       controller.signal,
       label
     );
+    let value;
     try {
-      return JSON.parse(new TextDecoder().decode(bytes));
+      value = JSON.parse(new TextDecoder().decode(bytes));
     } catch (error) {
       throw new Error(`${label} returned invalid JSON`, { cause: error });
     }
+    // Opt-in error evidence receives the same URL, type, size and time bounds.
+    if (!response.ok) {
+      throw Object.assign(new Error(`${label} failed with HTTP ${response.status}`), {
+        httpStatus: response.status, responseBody: value
+      });
+    }
+    return value;
   } finally {
     globalThis.clearTimeout(timeout);
     signal?.removeEventListener("abort", onCallerAbort);

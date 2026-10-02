@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createSamplePreviewServer } from "./server-custody-proxy.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -756,6 +757,8 @@ function errorPayload(error) {
       checkTxRejected: true,
       rpcInvoked: error?.rpcInvoked === true,
       ...(Number.isSafeInteger(txCode) && txCode > 0 ? { txCode } : {}),
+      ...(typeof error.txCodespace === "string" && /^[a-zA-Z0-9_.-]{1,128}$/.test(error.txCodespace) ? { txCodespace: error.txCodespace } : {}),
+      ...(["0", 0].includes(error.txHeight) ? { txHeight: "0" } : {}),
       ...(/^(0x)?[0-9a-fA-F]{64}$/.test(txHash) ? { txHash } : {})
     } : {})
   };
@@ -2954,6 +2957,7 @@ const handleChainProxy = chainProxyEnabled ? createLocalChainProxy({
   origin: `http://127.0.0.1:${config.port}`, rpc: config.rpc, rest: config.rest,
 }) : null;
 
+const custodyProxy = createSamplePreviewServer();
 const server = createServer((req, res) => {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("referrer-policy", "no-referrer");
@@ -2966,6 +2970,14 @@ const server = createServer((req, res) => {
     return;
   }
   const { rawPathname, url } = requestTarget;
+  if (rawPathname === '/custody-broadcast' || rawPathname.startsWith('/cosmos-rest/') || rawPathname.startsWith('/cosmos-rpc') || rawPathname.startsWith('/evm-rest/') || rawPathname.startsWith('/evm-rpc/')) {
+    if (rawPathname !== url.pathname) { sendJson(res, 404, { error: 'not found' }); return; }
+    custodyProxy.emit('request', req, res); return;
+  }
+  if (url.pathname === '/custody' || url.pathname === '/custody.html') {
+    sendJson(res, 404, { error: 'Custody is integrated in the sample at /' }); return;
+  }
+
   if (rawPathname.startsWith('/chain-rpc') || rawPathname.startsWith('/chain-rest')) {
     if (!handleChainProxy || rawPathname !== url.pathname) { sendJson(res, 404, { error: 'not found' }); return; }
     void handleChainProxy(req, res);

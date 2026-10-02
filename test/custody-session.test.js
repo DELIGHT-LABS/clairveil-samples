@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCustodySession, depositMethods } from '../public/custody-session.js';
-import { custodyActions } from '../public/custody-state.js';
+import { createCustodySession, depositMethods, fullFlowMethods } from '../public/custody-session.js';
+import { custodyActions, canResetCustodySession } from '../public/custody-state.js';
 
 function fixture(overrides = {}) {
   const actor = { namespace: 'eip155', chainId: '0x32f', address: '0x' + '11'.repeat(20) };
   const profile = { id: 'local', transport: 'evm', chainId: 'maroo-zerofee-2', evmChainId: '0x32f', caip: 'eip155:815', profileDigest: 'digest', denom: 'aokrw' };
   const listeners = new Set(), calls = [];
   const provider = { onInvalidation(fn) { listeners.add(fn); return () => listeners.delete(fn); }, invalidate() { for (const fn of listeners) fn(); } };
-  const connection = { permissions: ['deposit.request'], chainActors: [{ accountId: `${profile.caip}:${actor.address}`, chainActorHandle: 'actor' }], sessionHandle: 'session', accountHandle: 'account', networkHandle: 'network' };
+  const connection = { permissions: ['deposit.request'], chainActors: [{ accountId: `${profile.caip}:${actor.address}`, chainActorHandle: 'C'.repeat(42) + 'A' }], sessionHandle: 'S'.repeat(42) + 'A', accountHandle: 'A'.repeat(43), networkHandle: 'N'.repeat(42) + 'A' };
   let operation = { operationId: 'connect', kind: 'connect', state: 'completed', connection };
   const client = {
     getCapabilities: async () => ({ methods: depositMethods, networks: [{ networkId: profile.id, chainId: profile.caip, profileDigest: profile.profileDigest }] }),
@@ -32,7 +32,7 @@ test('custody flow requests deposit permission and submits once through the SDK 
   await f.session.deposit('7');
   assert.equal(f.calls[0][1].permissions.join(), 'deposit.request');
   assert.equal(f.calls[1][1].protocol.amountBaseUnits, '7');
-  assert.equal(f.calls[1][1].chainActorHandle, 'actor');
+  assert.equal(f.calls[1][1].chainActorHandle, f.connection.chainActors[0].chainActorHandle);
   f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'awaiting_chain_signature', publicArtifact: {} });
   await f.session.refresh(); await f.session.submit();
   assert.equal(custodyActions(f.session.state).submit, false);
@@ -83,7 +83,7 @@ test('invalidation fences a late response and leaves no restored connection', as
 
 test('concurrent mutation, unsupported amounts and wrong approval actor are rejected', async () => {
   const f = fixture(); await f.connect();
-  for (const amount of ['0', '-1', '1.2', '1000', '01', '1e2']) await assert.rejects(f.session.deposit(amount));
+  for (const amount of ['0', '-1', '1.2', '18446744073709551616', '01', '1e2']) await assert.rejects(f.session.deposit(amount));
   const pending = f.session.deposit('7'); await assert.rejects(f.session.deposit('8')); await pending;
   assert.equal(f.calls.filter(x => x[0] === 'deposit').length, 1);
   const wrong = fixture(); await wrong.session.connectWallet(); await wrong.session.connectCustody();
@@ -113,6 +113,20 @@ test('4112 after dispatch explains timeout/limit and preserves the uncertain-req
   assert.match(f.session.state.error, /응답 시간이 초과/);
   assert.equal(f.session.state.uncertain, true); await assert.rejects(f.session.connectCustody()); assert.equal(requests, 1);
   assert.equal(custodyActions(f.session.state).connect, false);
+});
+
+test('4105 explains restored-vault restrictions without retrying or invoking the wallet', async () => {
+  let preparations = 0, submissions = 0;
+  const f = fixture({ client: {
+    prepareDeposit: async () => { preparations++; throw Object.assign(new Error('RECOVERY_REQUIRED'), { code: 4105 }); },
+    submit: async () => { submissions++; }
+  } });
+  await f.connect(); await assert.rejects(f.session.deposit('7'));
+  assert.match(f.session.state.error, /복구 제한/);
+  assert.match(f.session.state.error, /지원하는 프로필의 새 입금은 별도 승인 후 가능/);
+  assert.match(f.session.state.error, /백업 검증이나 스캔만으로는 이 제한이 해제되지 않습니다/);
+  await assert.rejects(f.session.deposit('7')); await assert.rejects(f.session.submit());
+  assert.equal(preparations, 1); assert.equal(submissions, 0);
 });
 
 test('UI actions and command admission agree across deposit preparation, signing and unknown submission', async () => {
@@ -155,4 +169,257 @@ test('balance permission is explicit, capability-gated and clears stale data on 
   await f.session.balances(); assert.equal(f.session.state.balances.rows[0].spendableBaseUnits, '7');
   f.client.getBalances = async () => { throw new Error('Synthetic read failure'); };
   await assert.rejects(f.session.balances()); assert.equal(f.session.state.balances, null);
+});
+
+function fullFixture() {
+  const f = fixture();
+  f.client.getCapabilities = async () => ({ methods: [...depositMethods, ...fullFlowMethods], networks: [{ networkId: 'local', chainId: 'eip155:815', profileDigest: 'digest' }] });
+  f.client.connect = async params => { f.connection.permissions = params.permissions; f.connection.recoveryAccess = params.recoveryAccess; if (params.recoveryAccess) f.connection.chainActors = []; f.calls.push(['connect', params]); return { operationId: 'connect', state: 'awaiting_approval' }; };
+  f.client.getPublicAccount = async () => ({ protocol: { shieldedAddress: 'clairs1qqqqqqqq' } });
+  f.client.authorizeTransfer = async params => { f.calls.push(['transfer', params]); return { operationId: 'transfer', state: 'awaiting_approval' }; };
+  f.client.authorizeWithdraw = async params => { f.calls.push(['withdraw', params]); return { operationId: 'withdraw', state: 'awaiting_approval' }; };
+  f.client.requestDisclosure = async params => { f.calls.push(['disclosure', params]); return { operationId: 'disclosure', state: 'awaiting_approval' }; };
+  f.connectFull = async () => { await f.session.connectWallet(); await f.session.connectCustody({ fullFlow: true }); await f.session.refresh(); };
+  return f;
+}
+
+test('full flow is explicitly negotiated; self-transfer uses only the granted public address', async () => {
+  const f = fullFixture(); await f.connectFull();
+  assert.deepEqual(f.calls[0][1].permissions, ['deposit.request', 'balance.read', 'account.read', 'transfer.request', 'withdraw.request', 'disclosure.request']);
+  await assert.rejects(f.session.transfer('7'));
+  await f.session.publicAccount(); await f.session.transfer('7');
+  const request = f.calls.at(-1)[1];
+  assert.equal(request.protocol.recipientShieldedAddress, 'clairs1qqqqqqqq');
+  assert.deepEqual(request.protocol.disclosure, { policy: 'all-private', mode: 'none' });
+  assert.equal(request.protocol.selfViewEnabled, true);
+  assert.equal(f.calls.some(([method]) => method === 'submit'), false);
+});
+
+test('local spend schema errors are correctable without dispatch or an uncertain session', async () => {
+  const f = fullFixture(); await f.connectFull(); await f.session.publicAccount();
+  await assert.rejects(f.session.transfer('7', { recipientShieldedAddress: 'not-a-shielded-address' }), { code: -32602 });
+  await assert.rejects(f.session.withdraw('7', { recipientAddress: 'a'.repeat(513) }), { code: -32602 });
+  assert.equal(f.calls.filter(([method]) => ['transfer', 'withdraw'].includes(method)).length, 0);
+  assert.equal(f.session.state.uncertain, false);
+  assert.equal(custodyActions(f.session.state).deposit, true);
+  assert.equal(custodyActions(f.session.state).disclosure, true);
+  await f.session.transfer('7', { recipientShieldedAddress: 'clairs1pppppppp' });
+  assert.equal(f.calls.filter(([method]) => method === 'transfer').length, 1);
+});
+
+test('spend errors after dispatch preserve uncertainty even for a remote invalid-params error', async () => {
+  for (const error of [new Error('Lost reply'), Object.assign(new Error('Remote invalid params'), { code: -32602 })]) {
+    const f = fullFixture(); await f.connectFull(); await f.session.publicAccount();
+    let calls = 0; f.client.authorizeTransfer = async () => { calls++; throw error; };
+    await assert.rejects(f.session.transfer('7'));
+    assert.equal(f.session.state.uncertain, true);
+    await assert.rejects(f.session.transfer('7')); assert.equal(calls, 1);
+  }
+});
+
+test('transfer helper and final child each require one explicit submission; parent remains authoritative', async () => {
+  const f = fullFixture(); await f.connectFull(); await f.session.publicAccount(); await f.session.transfer('7');
+  let child = 'helper', revision = '1', phase = 'awaiting_chain_signature';
+  f.client.getOperation = async ({ operationId }) => operationId === 'transfer'
+    ? { operationId, kind: 'transfer', state: 'preparing', statusRevision: revision, steps: [{ operationId: child, stepKind: child === 'helper' ? 'zero_helper' : 'final_transfer', state: phase }] }
+    : { operationId, parentOperationId: 'transfer', kind: child === 'helper' ? 'zero_helper' : 'final_transfer', state: phase, statusRevision: revision };
+  await f.session.refresh(); assert.equal(f.session.state.activeOperation.operationId, 'helper');
+  await f.session.submit(); await assert.rejects(f.session.submit());
+  revision = '2'; phase = 'confirmed'; await f.session.refresh();
+  assert.equal(f.session.state.operation.state, 'preparing'); assert.equal(custodyActions(f.session.state).deposit, false);
+  child = 'final'; revision = '3'; phase = 'awaiting_chain_signature'; await f.session.refresh();
+  await f.session.submit(); await assert.rejects(f.session.submit());
+  assert.deepEqual(f.calls.filter(([method]) => method === 'submit').map(([, params]) => params.operation.operationId), ['helper', 'final']);
+});
+
+test('older revisions and mismatched operation replies cannot regress or authorize submission', async () => {
+  const f = fullFixture(); await f.connectFull(); await f.session.deposit('7');
+  f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'submitted', statusRevision: '9' }); await f.session.refresh();
+  f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'awaiting_chain_signature', statusRevision: '8' }); await f.session.refresh();
+  assert.equal(f.session.state.operation.state, 'submitted'); await assert.rejects(f.session.submit());
+  f.setOperation({ operationId: 'unrelated', kind: 'deposit', state: 'awaiting_chain_signature', statusRevision: '10' });
+  await assert.rejects(f.session.refresh(), /응답 작업/); assert.equal(f.session.state.operation.state, 'submitted');
+});
+
+test('withdraw is exact intent to the current ordinary actor and disclosure defaults to amount', async () => {
+  const f = fullFixture(); await f.connectFull(); await f.session.withdraw('7');
+  const withdraw = f.calls.at(-1)[1]; assert.equal(withdraw.protocol.recipientAddress, f.actor.address);
+  assert.equal(withdraw.protocol.amountBaseUnits, '7'); assert.equal(withdraw.protocol.recipientShieldedAddress, undefined);
+  f.setOperation({ operationId: 'withdraw', kind: 'withdraw', state: 'confirmed' }); await f.session.refresh();
+  await f.session.disclosure({ transactionHash: 'ab'.repeat(32), plane: 'self_view', delivery: 'page' });
+  assert.deepEqual(f.calls.at(-1)[1].requestedFields, ['amount']);
+  assert.equal(f.calls.at(-1)[1].protocol.transactionHash, '0x' + 'ab'.repeat(32));
+  assert.equal(f.calls.at(-1)[1].delivery, 'page'); assert.equal(f.calls.some(([method]) => method === 'submit'), false);
+});
+
+test('invalid disclosure fields remain correctable before dispatch', async () => {
+  const f = fullFixture(); await f.connectFull();
+  for (const requestedFields of [[], ['unknown'], ['from', 'from'], ['amount', 'from', 'to', 'extra']]) {
+    await assert.rejects(f.session.disclosure({ transactionHash: 'ab'.repeat(32), requestedFields }), { code: -32602 });
+    assert.equal(f.session.state.uncertain, false);
+  }
+  assert.equal(f.calls.some(([kind]) => kind === 'disclosure'), false);
+  await f.session.disclosure({ transactionHash: 'ab'.repeat(32), requestedFields: ['from', 'to'] });
+  assert.deepEqual(f.calls.at(-1)[1].requestedFields, ['from', 'to']);
+});
+
+test('known terminal consent operations can reset without clearing uncertain or chain authority', () => {
+  for (const kind of ['connect', 'disclosure']) for (const terminal of ['failed', 'expired']) {
+    const state = { actor: {}, operation: { kind, state: terminal }, uncertain: false, submissionAttempted: false };
+    assert.equal(canResetCustodySession(state), true);
+    assert.equal(custodyActions(state).connect, kind === 'connect');
+    for (const change of [{ uncertain: true }, { busy: true }, { submissionAttempted: true },
+      { operation: { ...state.operation, publicArtifact: {} } }, { operation: { ...state.operation, submissionAttempt: {} } }]) {
+      assert.equal(canResetCustodySession({ ...state, ...change }), false);
+    }
+  }
+  for (const kind of ['deposit', 'transfer', 'withdraw']) {
+    const state = { actor: {}, connection: { permissions: ['deposit.request', 'transfer.request', 'withdraw.request', 'disclosure.request'] }, operation: { kind, state: 'failed' } };
+    assert.equal(canResetCustodySession(state), false);
+    for (const action of ['deposit', 'transfer', 'withdraw', 'disclosure']) assert.equal(custodyActions(state)[action], false);
+  }
+});
+
+test('privacy requests accept protocol uint64 amounts without rounding or preview limits', async () => {
+  for (const method of ['deposit', 'transfer', 'withdraw']) {
+    for (const amount of ['1000', '9007199254740993', '18446744073709551615']) {
+      const f = fullFixture(); await f.connectFull(); await f.session.publicAccount();
+      await f.session[method](amount);
+      assert.equal(f.calls.at(-1)[1].protocol.amountBaseUnits, amount, method);
+    }
+    const f = fullFixture(); await f.connectFull(); await f.session.publicAccount();
+    for (const amount of ['18446744073709551616', '1'.repeat(80), '1.0', '0', '-1', '01']) {
+      await assert.rejects(f.session[method](amount), /정수/);
+      assert.equal(f.session.state.uncertain, false);
+    }
+    assert.equal(f.calls.some(([kind]) => kind === method), false);
+  }
+});
+
+test('exact-note preparation and withdrawal resumption require separate explicit requests', async () => {
+  const f = fullFixture(); await f.connectFull();
+  const recipient = '0x' + '22'.repeat(20);
+  await f.session.withdraw('1000', { recipientAddress: recipient });
+  f.setOperation({ operationId: 'withdraw', kind: 'withdraw', state: 'failed', failure: { code: 4202 } }); await f.session.refresh();
+  assert.equal(custodyActions(f.session.state).prepareWithdraw, true);
+  assert.equal(f.calls.some(([kind]) => kind === 'transfer'), false);
+  await f.session.prepareWithdrawNote();
+  assert.deepEqual(f.calls.at(-1)[1].protocol.disclosure, { policy: 'all-private', mode: 'none' });
+  assert.equal(f.calls.at(-1)[1].protocol.recipientShieldedAddress, 'clairs1qqqqqqqq');
+  assert.equal(f.calls.at(-1)[1].protocol.amountBaseUnits, '1000');
+  await assert.rejects(f.session.resumeWithdraw());
+  f.client.getOperation = async ({ operationId }) => operationId === 'transfer'
+    ? { operationId, kind: 'transfer', state: 'preparing', steps: [{ operationId: 'helper', state: 'confirmed' }] }
+    : { operationId, parentOperationId: 'transfer', kind: 'zero_helper', state: 'confirmed' };
+  await f.session.refresh(); await assert.rejects(f.session.resumeWithdraw());
+  f.client.getOperation = async () => ({ operationId: 'transfer', kind: 'transfer', state: 'confirmed' });
+  await f.session.refresh();
+  assert.equal(f.calls.filter(([kind]) => kind === 'withdraw').length, 1, 'polling must not request another withdrawal');
+  await f.session.resumeWithdraw();
+  assert.equal(f.calls.at(-1)[1].protocol.recipientAddress, recipient);
+  assert.equal(f.calls.at(-1)[1].protocol.amountBaseUnits, '1000');
+  assert.equal(f.calls.some(([kind]) => kind === 'submit'), false);
+});
+
+test('unresolved failure and exported authority never enable withdrawal preparation or session reset', async () => {
+  for (const extra of [{ failure: { code: 4201 } }, { submissionAttempt: { state: 'unresolved' } }, { publicArtifact: {} }]) {
+    const f = fullFixture(); await f.connectFull(); await f.session.withdraw('1');
+    f.setOperation({ operationId: 'withdraw', kind: 'withdraw', state: 'failed', failure: { code: 4202 }, ...extra }); await f.session.refresh();
+    assert.equal(custodyActions(f.session.state).prepareWithdraw, false);
+    await assert.rejects(f.session.prepareWithdrawNote()); await assert.rejects(f.session.disconnect());
+    assert.equal(f.calls.some(([kind]) => kind === 'transfer'), false);
+  }
+});
+
+test('malformed disclosure hashes remain correctable before dispatch or uncertainty', async () => {
+  const f = fullFixture(); await f.connectFull();
+  for (const transactionHash of ['', 'ab'.repeat(31), '0x' + 'ab'.repeat(33), '0x' + 'gg'.repeat(32)]) {
+    await assert.rejects(f.session.disclosure({ transactionHash }), /거래 해시/);
+    assert.equal(f.calls.some(([method]) => method === 'disclosure'), false);
+    assert.equal(f.session.state.uncertain, false);
+    assert.equal(custodyActions(f.session.state).disclosure, true);
+    assert.equal(custodyActions(f.session.state).deposit, true);
+  }
+  await f.session.disclosure({ transactionHash: 'AB'.repeat(32) });
+  assert.equal(f.calls.at(-1)[1].protocol.transactionHash, '0x' + 'ab'.repeat(32));
+});
+
+test('recovery connection scopes prior operations and cannot create or submit new work', async () => {
+  const f = fullFixture(), id = 'A'.repeat(43);
+  await f.session.connectWallet(); await f.session.connectCustody({ recoveryOperationIds: [id] }); await f.session.refresh();
+  assert.deepEqual(f.calls[0][1].permissions, []);
+  assert.equal(f.calls[0][1].chainActor, undefined);
+  f.setOperation({ operationId: id, kind: 'deposit', state: 'reconciliation_required', accessMode: 'recovery-only', runtimeState: 'recovery_required' });
+  await f.session.inspectRecovery(id); assert.equal(f.session.state.recoveryRequired, true);
+  await assert.rejects(f.session.inspectRecovery('B'.repeat(43)));
+  await assert.rejects(f.session.deposit('7')); await assert.rejects(f.session.transfer('7')); await assert.rejects(f.session.withdraw('7')); await assert.rejects(f.session.submit());
+  await f.session.reconcile(); assert.equal(f.calls.at(-1)[1].operationId, id);
+});
+
+test('invalid recovery IDs never dispatch or fence a corrected connection request', async () => {
+  for (const operationIds of [['B'.repeat(43)], ['A'.repeat(43), 'A'.repeat(43)]]) {
+    const f = fullFixture(); await f.session.connectWallet();
+    await assert.rejects(f.session.connectCustody({ recoveryOperationIds: operationIds }), { code: -32602 });
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.session.state.uncertain, false); assert.equal(f.session.state.operation, null);
+    assert.equal(custodyActions(f.session.state).connect, true);
+    await f.session.connectCustody({ recoveryOperationIds: ['A'.repeat(43)] }); await f.session.refresh();
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(f.session.state.connection.recoveryAccess.operationIds, ['A'.repeat(43)]);
+  }
+});
+
+test('a recovery connection error after dispatch retains its unknown-request fence', async () => {
+  const f = fullFixture(); await f.session.connectWallet(); let calls = 0;
+  f.client.connect = async () => { calls++; throw Object.assign(new Error('Remote rejection'), { code: -32602 }); };
+  await assert.rejects(f.session.connectCustody({ recoveryOperationIds: ['A'.repeat(43)] }));
+  assert.equal(f.session.state.uncertain, true);
+  await assert.rejects(f.session.connectCustody({ recoveryOperationIds: ['A'.repeat(43)] }));
+  assert.equal(calls, 1);
+});
+
+test('spend expiry stays within the pinned host 1800-second future admission bound', async () => {
+  const f = fullFixture(); await f.connectFull();
+  const before = Math.floor(Date.now() / 1000); await f.session.withdraw('7');
+  const seconds = Number(f.calls.at(-1)[1].protocol.expiresAtUnix) - before;
+  assert(seconds > 0 && seconds <= 1800, `Spend expiry ${seconds}s exceeds pinned maxFutureSeconds 1800`);
+});
+
+test('sample intents validate against the exact custody-pinned SDK public schema', async () => {
+  const { pathToFileURL } = await import('node:url');
+  const { custodySdkRoot } = await import('../tools/custody-sdk.mjs');
+  const { validateWalletParams } = await import(pathToFileURL(`${custodySdkRoot}/src/wallet-api/index.js`));
+  for (const [method, invoke] of [
+    ['prepareDeposit', f => f.session.deposit('7')],
+    ['authorizeTransfer', async f => { await f.session.publicAccount(); await f.session.transfer('7', { publicDisclosure: true }); }],
+    ['authorizeWithdraw', f => f.session.withdraw('7')],
+    ['requestDisclosure', f => f.session.disclosure({ transactionHash: '0x' + 'ab'.repeat(32), plane: 'self_view', delivery: 'page' })]
+  ]) {
+    const f = fullFixture();
+    for (const [key, char] of [['sessionHandle', 'S'], ['accountHandle', 'A'], ['networkHandle', 'N']]) f.connection[key] = char.repeat(42) + 'A';
+    f.connection.chainActors[0].chainActorHandle = 'C'.repeat(42) + 'A';
+    f.client.getPublicAccount = async () => ({ protocol: { shieldedAddress: 'clairs1qqqqqqqq' } });
+    await f.connectFull(); validateWalletParams('clairveil_connect', f.calls[0][1]);
+    await invoke(f); validateWalletParams(`clairveil_${method}`, f.calls.at(-1)[1]);
+  }
+  const f = fullFixture(); await f.session.connectWallet();
+  await f.session.connectCustody({ recoveryOperationIds: ['A'.repeat(43)] });
+  validateWalletParams('clairveil_connect', f.calls[0][1]);
+});
+
+test('recovery parent does not query a child outside its fresh consent scope', async () => {
+  const f = fullFixture(), id = 'A'.repeat(43), child = 'B'.repeat(42) + 'A';
+  await f.session.connectWallet(); await f.session.connectCustody({ recoveryOperationIds: [id] }); await f.session.refresh();
+  f.client.getOperation = async ({ operationId }) => {
+    assert.equal(operationId, id, 'ungranted child must never be queried');
+    return { operationId, kind: 'transfer', state: 'reconciliation_required', accessMode: 'recovery-only', steps: [{ operationId: child, state: 'submitted', stepKind: 'final_transfer' }] };
+  };
+  await f.session.inspectRecovery(id); await f.session.refresh();
+  assert.equal(f.session.state.invalidated, false); assert.equal(f.session.state.activeOperation, null);
+});
+
+test('a connection cannot silently add permissions absent from the user request', async () => {
+  const f = fixture(); await f.session.connectWallet(); await f.session.connectCustody();
+  f.connection.permissions.push('withdraw.request'); await assert.rejects(f.session.refresh());
+  assert.equal(f.session.state.connection, null);
 });

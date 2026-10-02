@@ -57,14 +57,24 @@ export function watchCustodyWallet(page, invalidate) {
   };
 }
 
-export async function broadcastCustodyCosmos(bytes) {
-  const response = await fetch('/custody-broadcast', {
+export async function broadcastCustodyCosmos(bytes, _actor, { fetchImpl = fetch } = {}) {
+  const response = await fetchImpl('/custody-broadcast', {
     method: 'POST', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20000),
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ tx_bytes: btoa(String.fromCharCode(...bytes)), mode: 'BROADCAST_MODE_SYNC' })
   });
   if (!response.ok) throw new Error('체인 제출 결과를 확인하지 못했습니다.');
   const result = (await response.json()).tx_response;
+  // Only recognize explicit fee/funds rejection of these exact bytes at CheckTx.
+  // Duplicate-cache, sequence, malformed and lost replies remain unresolved.
+  if (result?.codespace === 'sdk' && [5, 13].includes(result.code) && ['0', 0].includes(result.height)
+    && typeof result.txhash === 'string' && /^[0-9a-fA-F]{64}$/.test(result.txhash)) {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const hash = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+    if (result.txhash.toLowerCase() === hash) {
+      throw Object.assign(new Error(`Cosmos CheckTx rejected the send: ${result.code === 5 ? 'insufficient funds' : 'insufficient fee'}.`), { cosmosCheckTxRejected: true });
+    }
+  }
   if (!result || Number(result.code) !== 0 || !/^[0-9a-fA-F]{64}$/.test(result.txhash)) {
     throw new Error('체인 제출 결과를 확인하지 못했습니다.');
   }

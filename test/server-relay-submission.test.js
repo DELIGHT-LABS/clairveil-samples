@@ -137,12 +137,16 @@ test("Cosmos relay rejects an explicit non-zero CheckTx response", () => {
   assert.throws(
     () => assertCosmosCheckTxAccepted({
       code: "12",
+      codespace: "sdk",
+      height: "0",
       txhash: "ABCD",
       raw_log: "insufficient fee",
     }),
     error => error.message === "insufficient fee"
       && error.txHash === "ABCD"
       && error.txCode === 12
+      && error.txCodespace === "sdk"
+      && error.txHeight === "0"
       && error.checkTxRejected === true
       && error.rpcInvoked === true,
   );

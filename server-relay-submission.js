@@ -322,6 +322,8 @@ export function assertCosmosCheckTxAccepted(tx, { markSubmissionRejected } = {})
     );
     error.txHash = String(tx?.txhash || tx?.txHash || "").trim();
     error.txCode = code;
+    error.txCodespace = tx?.codespace;
+    error.txHeight = tx?.height;
     error.checkTxRejected = true;
     error.rpcInvoked = true;
     throw error;

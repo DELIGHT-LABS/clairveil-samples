@@ -1,17 +1,15 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readBoundedBody } from '../server-bounded-body.js';
+import { readBoundedBody } from './server-bounded-body.js';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
-const assets = { '/': 'custody.html', '/custody': 'custody.html', '/custody.html': 'custody.html', '/custody.css': 'custody.css',
-  '/custody.bundle.js': 'custody.bundle.js', '/custody-profiles.json': 'custody-profiles.json' };
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'public');
+const assets = { '/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css', '/app.bundle.js': 'app.bundle.js', '/custody-profiles.json': 'custody-profiles.json' };
 const readMethods = new Set(['status', 'abci_info', 'abci_query', 'block', 'block_results', 'blockchain', 'commit', 'genesis', 'validators', 'tx', 'tx_search', 'health', 'net_info']);
 const origin = 'http://127.0.0.1:4320';
 
-export function createCustodyPreviewServer({ publicDirectory = root, fetchImpl = fetch } = {}) {
+export function createSamplePreviewServer({ publicDirectory = root, fetchImpl = fetch } = {}) {
   return createServer(async (request, response) => {
     const finish = (code, body, type = 'application/json') => {
       response.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
@@ -31,6 +29,10 @@ export function createCustodyPreviewServer({ publicDirectory = root, fetchImpl =
         const params = JSON.parse((await readBoundedBody(request, 65536)).toString());
         if (Object.keys(params).sort().join() !== 'mode,tx_bytes' || params.mode !== 'BROADCAST_MODE_SYNC' || typeof params.tx_bytes !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(params.tx_bytes)) return finish(400, '{"error":"Invalid transaction envelope"}');
         upstream = 'http://127.0.0.1:1317/cosmos/tx/v1beta1/txs'; body = JSON.stringify(params);
+      } else if (url.pathname.startsWith('/evm-rest/') && request.method === 'GET') {
+        upstream = `http://127.0.0.1:1417${url.pathname.slice('/evm-rest'.length)}${url.search}`;
+      } else if (url.pathname.startsWith('/evm-rpc/') && request.method === 'GET' && readMethods.has(url.pathname.slice('/evm-rpc/'.length))) {
+        upstream = `http://127.0.0.1:27657${url.pathname.slice('/evm-rpc'.length)}${url.search}`;
       } else if (url.pathname.startsWith('/cosmos-rest/') && request.method === 'GET') {
         upstream = `http://127.0.0.1:1317${url.pathname.slice('/cosmos-rest'.length)}${url.search}`;
       } else if (url.pathname.startsWith('/cosmos-rpc')) {
@@ -50,13 +52,4 @@ export function createCustodyPreviewServer({ publicDirectory = root, fetchImpl =
       return finish(upstreamResponse.status, bytes);
     } catch { finish(502, '{"error":"Local chain unavailable or request rejected; do not automatically resubmit"}'); }
   });
-}
-
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const evidence = JSON.parse(await readFile(path.join(root, 'custody-build.json')));
-  for (const [name, expected] of Object.entries(evidence.files)) {
-    if (createHash('sha256').update(await readFile(path.join(root, name))).digest('hex') !== expected) throw new Error('Custody assets changed; run npm run build:custody.');
-  }
-  const server = createCustodyPreviewServer();
-  server.listen(4320, '127.0.0.1', () => console.log('Custody preview: http://127.0.0.1:4320/custody\nLocal chain/prover and the manual custody workbench must be running.'));
 }

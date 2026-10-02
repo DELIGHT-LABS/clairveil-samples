@@ -1,0 +1,9 @@
+{
+  "archive": "vendor/clairveiljs-custody-0.3.1.tgz",
+  "integrity": "sha512-MB8MBfq6EL+jKzr/2wSh6XRk/Q+HEaDOHobSCdaUBz7t3oJEvlyS7TK4iRbtOsfg5H3+AijIg6PHZuFjYZn2Rw==",
+  "source": {
+    "baseCommit": "525752c5231bc3cb3a656f0a67d2329fc02c28b0",
+    "state": "uncommitted working tree",
+    "patchSha256": "5bb440a70fb0ce33a995a70feb266e8af13c0e0a2b18b4332697d927b9510ade"
+  }
+}
