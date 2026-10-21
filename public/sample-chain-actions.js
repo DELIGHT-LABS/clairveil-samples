@@ -64,8 +64,16 @@ export async function sendTransparent({ profile, actor, recipient, amount, brows
   const signatureBytes = Uint8Array.from(atob(signature), char => char.charCodeAt(0));
   if (signatureBytes.length !== 64) throw new Error('Invalid ordinary-wallet signature.');
   const raw = TxRaw.encode(TxRaw.fromPartial({ bodyBytes, authInfoBytes, signatures: [signatureBytes] })).finish();
-  beforeBroadcast();
-  try { return await broadcast(raw); }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw));
+  const hash = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  signal?.throwIfAborted();
+  if (!isCurrent()) throw new Error('Connection changed; submission stopped.');
+  beforeBroadcast(hash);
+  try {
+    const returnedHash = await broadcast(raw);
+    if (typeof returnedHash !== 'string' || returnedHash.toLowerCase() !== hash) throw new Error('Broadcast response does not match the signed transaction.');
+    return hash;
+  }
   catch (cause) {
     if (cause?.cosmosCheckTxRejected === true) throw Object.assign(new Error(cause.message), { publicSendRejected: true });
     throw cause;
