@@ -660,6 +660,70 @@ test('main sample fences an unknown mutation and disposes on network change/page
   assert.equal(current.disposed, 1); assert.equal(f.$('custodySubmit').disabled, true);
 });
 
+test('unavailable connection explains the next action and enables explicit reconnect before deposit', async t => {
+  const f = await mount(t); await f.click('connectKeplr'); await f.click('signSession');
+  const runtime = f.app.runtime, lookup = runtime.client.getOperation;
+  runtime.client.getOperation = async () => { throw Object.assign(new Error('Unauthorized'), { code: 4103 }); };
+  await f.click('custodyRefresh');
+  assert.equal(f.$('signSession').disabled, false);
+  assert.equal(f.$('disconnectWallet').disabled, false);
+  assert.equal(f.$('depositFromKeplr').disabled, true);
+  assert.match(f.$('custodyError').textContent, /연결.*다시/);
+  assert.match(f.$('custodyOperationState').textContent, /Connection request unavailable/);
+  assert.doesNotMatch(f.$('custodyActiveStep').textContent, /approval pending/);
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'connect').length, 1);
+  runtime.client.getOperation = lookup;
+  await f.click('signSession');
+  assert.equal(f.$('depositFromKeplr').disabled, true, 'renewal still needs explicit custody consent');
+  await runtime.session.refresh();
+  assert.equal(f.$('depositFromKeplr').disabled, false);
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'connect').length, 2);
+});
+
+test('backup admission rejection keeps deposit retry usable after trusted verification', async t => {
+  const f = await mount(t); await f.connect();
+  const runtime = f.app.runtime, prepare = runtime.client.prepareDeposit;
+  let rejected = 0;
+  runtime.client.prepareDeposit = async () => { rejected++; throw Object.assign(new Error('BACKUP_REQUIRED'), { code: 4114 }); };
+  await f.click('depositFromKeplr');
+  assert.equal(f.$('depositFromKeplr').disabled, false);
+  assert.equal(f.$('disconnectWallet').disabled, false);
+  assert.equal(f.$('walletSignatureHash').textContent, 'Approved by custody');
+  assert.equal(f.$('custodySubmit').disabled, true);
+  assert.match(f.$('custodyError').textContent, /저장한 백업 확인/);
+  assert.equal(runtime.session.state.operation.kind, 'connect');
+  assert.equal(rejected, 1);
+  runtime.client.prepareDeposit = prepare;
+  await f.click('depositFromKeplr');
+  assert.equal(f.$('depositFromKeplr').disabled, true);
+  assert.equal(runtime.session.state.operation.state, 'awaiting_approval');
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'deposit').length, 1);
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'connect').length, 1);
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'submit').length, 0);
+});
+
+test('expired deposit consent stays on the DApp with explicit reconnect instead of opening an empty workbench', async t => {
+  const f = await mount(t); await f.connect();
+  const runtime = f.app.runtime, before = runtime.presentations;
+  runtime.client.getOperation = async () => { throw Object.assign(new Error('Expired grant'), { code: 4103 }); };
+  await f.click('depositFromKeplr');
+  assert.equal(runtime.presentations, before);
+  assert.equal(runtime.calls.filter(([kind]) => kind === 'deposit').length, 0);
+  assert.equal(runtime.session.state.uncertain, false);
+  assert.equal(f.$('signSession').disabled, false);
+  assert.equal(f.$('signSession').textContent, 'Reconnect custody');
+  assert.match(f.$('custodyError').textContent, /Reconnect custody/);
+  await f.click('signSession');
+  const renewed = f.app.runtime;
+  assert.notEqual(renewed, runtime); assert.equal(runtime.disposed, 1);
+  assert.equal(renewed.calls.filter(([kind]) => kind === 'connect').length, 1);
+  assert.equal(f.$('depositFromKeplr').disabled, true, 'fresh consent is still required');
+  await renewed.session.refresh();
+  await f.click('depositFromKeplr');
+  assert.equal(renewed.calls.filter(([kind]) => kind === 'deposit').length, 1);
+  assert.equal(renewed.calls.filter(([kind]) => kind === 'submit').length, 0);
+});
+
 test('main permissions default to the full flow, allow opting out and keep recovery access restricted', async t => {
   const full = await mount(t);
   assert.equal(full.$('custodyFullFlow').checked, true);

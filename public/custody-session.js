@@ -14,9 +14,9 @@ const canonical = value => JSON.stringify(value, function (_key, item) {
 });
 
 export function createCustodySession({ client, provider, wallet, profile, onChange = () => {} }) {
-  const state = { actor: null, capabilities: null, connection: null, operation: null, busy: false,
+  const state = { actor: null, capabilities: null, connection: null, connectionUnavailable: false, operation: null, busy: false,
     invalidated: false, uncertain: false, submissionAttempted: false, balances: null, publicAccount: null, activeOperation: null, withdrawalPreparation: null, recoveryRequired: false, error: '' };
-  let revision = 0, disposed = false, requestedPermissions = [], recoveryAccess;
+  let revision = 0, disposed = false, requestedPermissions = [], recoveryAccess, connectionOperationId;
   const snapshots = new Map(), submitted = new Set();
   const notify = () => onChange({ ...state });
   const context = () => {
@@ -44,11 +44,15 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
     try { const result = await work(() => current(stamp)); if (!disconnecting) current(stamp); return result; }
     catch (error) {
       if (state.connection && [4103, 4104].includes(error?.code)) provider.invalidate();
-      state.error = error?.code === 4112
+      state.error = state.connectionUnavailable
+        ? '연결 요청이 만료되었거나 더 이상 유효하지 않습니다. Request custody connection을 다시 눌러 커스터디에서 연결을 승인하세요.'
+        : state.invalidated && canResetCustodySession({ ...state, busy: false })
+        ? '커스터디 연결이 만료되었거나 변경되었습니다. Reconnect custody를 눌러 새 연결을 승인하세요.'
+        : error?.code === 4112
         ? '커스터디 응답 시간이 초과됐거나 요청 제한에 걸렸습니다. 작업창 상태를 확인하세요. 결과가 불명확한 연결·입금·서명 요청은 다시 제출하지 마세요.'
         : error?.code === 4104 ? '커스터디 작업창에서 금고를 생성하거나 잠금을 해제하고 백업을 검증하세요.'
         : error?.code === 4105 ? '금고가 복구 제한 상태입니다. 지원하는 프로필의 새 입금은 별도 승인 후 가능하지만 기존·새 노트의 지출은 제한됩니다. 백업 검증이나 스캔만으로는 이 제한이 해제되지 않습니다. 확장 작업창에서 입금 가능 여부와 복구 차단 사유를 확인하세요.'
-        : error?.code === 4114 ? '커스터디 작업창에서 독립 백업 검증을 완료하세요.'
+        : error?.code === 4114 ? '커스터디의 ‘저장한 백업 확인’에서 파일과 복구 코드를 검증한 뒤 입금을 다시 요청하세요.'
         : error?.code === -32602 && !state.uncertain ? '요청 입력 형식이 올바르지 않습니다. 복구 ID나 수신 주소를 확인하고 다시 요청하세요.'
         : typeof error?.code === 'number' ? `커스터디 요청 오류 (${error.code}). 작업창과 요청 상태를 확인하세요.` : error.message;
       if (error?.code === 4105) state.recoveryRequired = true;
@@ -60,9 +64,22 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
     const actor = await wallet.getActor(); check();
     if (!sameActor(state.actor, actor)) { provider.invalidate(); throw new Error('일반 지갑의 계정 또는 체인이 변경되었습니다.'); }
   }
+  async function checkDepositConnection(check) {
+    const connection = state.connection;
+    if (!connectionOperationId || !connection || (connection.expiresAtUnix && BigInt(connection.expiresAtUnix) <= BigInt(Math.floor(Date.now() / 1000)))) {
+      throw Object.assign(new Error('Connection expired'), { code: 4103 });
+    }
+    // This authenticated read cannot admit a deposit. Do it before opening the
+    // approval window or fencing a mutation whose response could be lost.
+    const value = await client.getOperation({ ...base, ...context(), operationId: connectionOperationId });
+    check();
+    if (value.operationId !== connectionOperationId || value.kind !== 'connect' || value.state !== 'completed'
+      || canonical(value.connection) !== canonical(connection)) throw Object.assign(new Error('Connection changed'), { code: 4103 });
+  }
   function accepted(value, kind) {
     state.uncertain = false; state.operation = { ...value, kind }; state.activeOperation = null; state.submissionAttempted = false;
-    state.withdrawalPreparation = null;
+    state.withdrawalPreparation = null; state.connectionUnavailable = false;
+    if (kind === 'connect') connectionOperationId = value.operationId;
   }
   function applySnapshot(value, id) {
     if (value.operationId !== id) throw new Error('응답 작업이 요청과 다릅니다.');
@@ -129,14 +146,25 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
       recoveryAccess = recoveryOperationIds.length ? { operationIds: [...recoveryOperationIds], methods: ['clairveil_getOperation', 'clairveil_reconcile', 'clairveil_cancelOperation'] } : undefined;
       const params = validateWalletParams('clairveil_connect', { ...base, idempotencyKey: handle(), networkId: profile.id,
         permissions: requestedPermissions, ...(recoveryAccess ? { recoveryAccess } : { chainActor: { accountId: accountId(), ...(state.actor.namespace === 'cosmos' ? { publicKeyHex: state.actor.pubKeyHex } : {}) } }), protocol: { publicAccountFields: fullFlow && !recoveryAccess ? ['shieldedAddress'] : [] } });
-      state.uncertain = true;
+      state.uncertain = true; state.connectionUnavailable = false;
       const result = await client.connect(params);
       check(); accepted(result, 'connect');
     }),
     refresh: () => run(async check => {
       if (!state.operation) return;
+      if (state.connectionUnavailable) throw new Error('새 연결 요청이 필요합니다.');
       const id = state.operation.operationId;
-      const value = await client.getOperation({ ...base, ...(state.operation.kind === 'connect' ? {} : context()), operationId: id });
+      let value;
+      try {
+        value = await client.getOperation({ ...base, ...(state.operation.kind === 'connect' ? {} : context()), operationId: id });
+      } catch (error) {
+        check();
+        // This is a rejected lookup of a known consent request, never a lost
+        // mutation reply or a chain operation. Preserve the host snapshot.
+        if (error?.code === 4103 && state.operation.kind === 'connect' && !state.connection && !state.uncertain
+          && !state.submissionAttempted && !state.operation.publicArtifact && !state.operation.submissionAttempt) state.connectionUnavailable = true;
+        throw error;
+      }
       check(); const op = applySnapshot(value, id);
       if (op.kind === 'connect' && op.state === 'completed') {
         if (canonical([...requestedPermissions].sort()) !== canonical([...(op.connection?.permissions ?? [])].sort())
@@ -192,16 +220,27 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
       const value = await client.getOperation({ ...base, ...context(), operationId }); check();
       state.operation = applySnapshot(value, operationId); state.activeOperation = null; state.submissionAttempted = true;
     }),
-    deposit: amount => run(async check => {
+    deposit: (amount, { beforeRequest } = {}) => run(async check => {
       amountCheck(amount);
       if (!custodyActions(state).deposit) throw new Error('기존 작업을 먼저 확인하세요.');
       state.balances = null;
       await checkActor(check);
+      await checkDepositConnection(check);
+      await beforeRequest?.(); check();
       const chainActor = state.connection.chainActors.find(actor => actor.accountId === accountId());
       state.uncertain = true;
-      const result = await client.prepareDeposit({ ...base, ...context(), idempotencyKey: handle(), chainActorHandle: chainActor.chainActorHandle,
-        protocol: { assetDenom: profile.denom, amountBaseUnits: amount, purpose: 'funding' },
-        privacyConstraints: { allowRemoteWitness: true, allowPublicChainActor: true } });
+      let result;
+      try {
+        result = await client.prepareDeposit({ ...base, ...context(), idempotencyKey: handle(), chainActorHandle: chainActor.chainActorHandle,
+          protocol: { assetDenom: profile.denom, amountBaseUnits: amount, purpose: 'funding' },
+          privacyConstraints: { allowRemoteWitness: true, allowPublicChainActor: true } });
+      } catch (error) {
+        check();
+        // BACKUP_REQUIRED is rejected before the host creates a deposit. Only
+        // this known admission failure releases the new request's unknown flag.
+        if (error?.code === 4114 && !error?.data?.operationId) state.uncertain = false;
+        throw error;
+      }
       check(); accepted(result, 'deposit');
     }),
     submit: () => run(async check => {

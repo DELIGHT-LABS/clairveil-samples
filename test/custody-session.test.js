@@ -48,6 +48,54 @@ test('custody flow requests deposit permission and submits once through the SDK 
   assert.equal(custodyActions(f.session.state).poll, false);
 });
 
+test('unavailable pending connection stops polling and allows explicit fresh consent without granting deposit', async () => {
+  const f = fixture(); await f.session.connectWallet(); await f.session.connectCustody();
+  const original = f.session.state.operation;
+  f.client.getOperation = async () => { throw Object.assign(new Error('Unauthorized'), { code: 4103 }); };
+  await assert.rejects(f.session.refresh(), { code: 4103 });
+  assert.equal(f.session.state.connectionUnavailable, true);
+  assert.deepEqual(f.session.state.operation, original, 'retain the last host snapshot without inventing a terminal state');
+  assert.equal(custodyActions(f.session.state).poll, false);
+  assert.equal(custodyActions(f.session.state).connect, true);
+  assert.equal(custodyActions(f.session.state).deposit, false);
+  assert.equal(canResetCustodySession(f.session.state), true);
+  assert.match(f.session.state.error, /연결.*다시/);
+  assert.equal(f.calls.filter(([kind]) => kind === 'connect').length, 1, 'no automatic retry');
+  await f.session.connectCustody();
+  assert.equal(f.session.state.connectionUnavailable, false);
+  assert.equal(custodyActions(f.session.state).connect, false);
+  assert.equal(custodyActions(f.session.state).deposit, false);
+  assert.equal(f.calls.filter(([kind]) => kind === 'connect').length, 2);
+  assert.notEqual(f.calls[0][1].idempotencyKey, f.calls[1][1].idempotencyKey);
+});
+
+test('only a definitive unauthorized connection lookup releases consent retry, never unknown or chain work', async () => {
+  for (const code of [4104, 4112, undefined]) {
+    const f = fixture(); await f.session.connectWallet(); await f.session.connectCustody();
+    f.client.getOperation = async () => { throw Object.assign(new Error('Unavailable'), { code }); };
+    await assert.rejects(f.session.refresh());
+    assert.equal(custodyActions(f.session.state).connect, false);
+    assert.equal(canResetCustodySession(f.session.state), false);
+  }
+  const renewal = fixture(); await renewal.session.connectWallet(); await renewal.session.connectCustody();
+  renewal.client.getOperation = async () => { throw Object.assign(new Error('Unauthorized'), { code: 4103 }); };
+  await assert.rejects(renewal.session.refresh());
+  renewal.client.connect = async () => { throw Object.assign(new Error('Lost renewal reply'), { code: 4112 }); };
+  await assert.rejects(renewal.session.connectCustody());
+  assert.equal(renewal.session.state.connectionUnavailable, false);
+  assert.equal(renewal.session.state.uncertain, true);
+  assert.equal(custodyActions(renewal.session.state).connect, false);
+  assert.equal(canResetCustodySession(renewal.session.state), false);
+  assert.doesNotMatch(renewal.session.state.error, /Request custody connection을 다시/);
+  const f = fixture(); await f.connect(); await f.session.deposit('7');
+  f.client.getOperation = async () => { throw Object.assign(new Error('Unauthorized'), { code: 4103 }); };
+  await assert.rejects(f.session.refresh(), { code: 4103 });
+  assert.equal(f.session.state.invalidated, true);
+  assert.equal(custodyActions(f.session.state).connect, false);
+  assert.equal(canResetCustodySession(f.session.state), false);
+  assert.equal(f.session.state.operation.operationId, 'deposit');
+});
+
 test('missing capability and mismatched profile stop before connect', async () => {
   for (const caps of [
     { methods: depositMethods.slice(0, -1), networks: [] },
@@ -64,6 +112,88 @@ test('lost mutation response blocks another deposit instead of creating a new id
   await f.connect(); await assert.rejects(f.session.deposit('7')); await assert.rejects(f.session.deposit('7'));
   assert.equal(deposits, 1); assert.equal(f.session.state.uncertain, true);
   assert.equal(custodyActions(f.session.state).deposit, false);
+});
+
+test('deposit checks its live connection before presenting or dispatching and leaves expired consent resettable', async () => {
+  for (const failure of ['expired', 'revoked', 'locked']) {
+    const f = fixture(); await f.connect();
+    const before = f.session.state.operation;
+    let presented = 0, reads = 0;
+    if (failure === 'expired') f.connection.expiresAtUnix = String(Math.floor(Date.now() / 1000) - 1);
+    f.client.getOperation = async () => { reads++; throw Object.assign(new Error(failure), { code: failure === 'locked' ? 4104 : 4103 }); };
+    await assert.rejects(f.session.deposit('7', { beforeRequest: async () => { presented++; } }));
+    assert.equal(presented, 0); assert.equal(f.calls.filter(([kind]) => kind === 'deposit').length, 0);
+    assert.equal(f.session.state.uncertain, false); assert.equal(f.session.state.invalidated, true);
+    assert.deepEqual(f.session.state.operation, before);
+    assert.equal(canResetCustodySession(f.session.state), true);
+    if (failure === 'expired') assert.equal(reads, 0);
+  }
+});
+
+test('deposit connection preflight fences late replies while authorization loss after dispatch remains uncertain', async () => {
+  const f = fixture(); await f.connect();
+  let resolve, presented = 0;
+  f.client.getOperation = () => new Promise(done => { resolve = done; });
+  const pending = f.session.deposit('7', { beforeRequest: async () => { presented++; } });
+  await new Promise(done => setImmediate(done));
+  f.provider.invalidate(); resolve({ operationId: 'connect', kind: 'connect', state: 'completed', connection: f.connection });
+  await assert.rejects(pending);
+  assert.equal(presented, 0); assert.equal(f.calls.filter(([kind]) => kind === 'deposit').length, 0);
+  assert.equal(f.session.state.connection, null);
+  for (const code of [4103, 4104, 4112]) {
+    const uncertain = fixture({ client: { prepareDeposit: async () => { throw Object.assign(new Error('After dispatch'), { code }); } } });
+    await uncertain.connect(); await assert.rejects(uncertain.session.deposit('7'));
+    assert.equal(uncertain.session.state.uncertain, true);
+    assert.equal(canResetCustodySession(uncertain.session.state), false);
+  }
+});
+
+test('backup rejection before deposit admission permits an explicit retry without losing the approved connection', async () => {
+  const requests = [];
+  let verified = false;
+  const f = fixture({ client: { prepareDeposit: async params => {
+    requests.push(params);
+    if (!verified) throw Object.assign(new Error('BACKUP_REQUIRED'), { code: 4114 });
+    return { operationId: 'deposit', state: 'awaiting_approval' };
+  } } });
+  await f.connect();
+  const prior = f.session.state.operation;
+  await assert.rejects(f.session.deposit('7'), { code: 4114 });
+  assert.equal(f.session.state.uncertain, false);
+  assert.deepEqual(f.session.state.operation, prior);
+  assert.deepEqual(f.session.state.connection, f.connection);
+  assert.equal(custodyActions(f.session.state).deposit, true);
+  assert.equal(canResetCustodySession(f.session.state), true);
+  assert.match(f.session.state.error, /저장한 백업 확인/);
+  assert.equal(requests.length, 1, 'backup rejection never retries automatically');
+  verified = true;
+  await f.session.deposit('7');
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0].idempotencyKey, requests[1].idempotencyKey);
+  assert.equal(f.session.state.operation.kind, 'deposit');
+  assert.equal(custodyActions(f.session.state).deposit, false);
+  assert.equal(f.calls.some(([kind]) => kind === 'submit'), false);
+});
+
+test('backup retry exception never releases unknown deposit outcomes or a late invalidated response', async () => {
+  for (const error of [new Error('Timeout'), ...[4112, 4113].map(code => Object.assign(new Error('Unavailable'), { code })),
+    Object.assign(new Error('Unexpected operation binding'), { code: 4114, data: { operationId: 'unknown-deposit' } })]) {
+    const f = fixture({ client: { prepareDeposit: async () => { throw error; } } });
+    await f.connect(); await assert.rejects(f.session.deposit('7'));
+    assert.equal(f.session.state.uncertain, true);
+    assert.equal(custodyActions(f.session.state).deposit, false);
+    assert.equal(canResetCustodySession(f.session.state), false);
+  }
+  let reject;
+  const f = fixture({ client: { prepareDeposit: () => new Promise((_, failed) => { reject = failed; }) } });
+  await f.connect();
+  const pending = f.session.deposit('7');
+  await new Promise(resolve => setImmediate(resolve));
+  f.provider.invalidate();
+  reject(Object.assign(new Error('BACKUP_REQUIRED'), { code: 4114 }));
+  await assert.rejects(pending);
+  assert.equal(f.session.state.uncertain, true);
+  assert.equal(f.session.state.invalidated, true);
 });
 
 test('wallet account change blocks preparation and revokes the connection', async () => {

@@ -71,6 +71,8 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   }
   const invokeCustody = action => invoke(action, { present: true });
   const invokeSubmission = action => invokeCustody(r => withSubmissionLock(r, action));
+  const canReconnect = state => Boolean(runtime && state.actor && state.invalidated && !publicBusy && !custodyOpening
+    && !sendRecord && canResetCustodySession(state));
   const syncSendRecord = event => {
     const actor = runtime?.session.state.actor;
     if (!alive || !actor || (event?.type === 'storage' && event.key !== null && ![sendKey(actor), faucetKey(actor)].includes(event.key))) return;
@@ -97,10 +99,12 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     if ($('disconnectWallet')) $('disconnectWallet').title = canResetCustodySession(state) ? '' : 'Inspect or finish the outstanding custody operation before disconnecting; its ID and submission state are retained.';
     if ($('disconnectWallet')) $('disconnectWallet').hidden = !state.actor;
     const custodySetup = !state.actor && !state.connection && !state.operation && !state.uncertain && !networkRegistered;
-    enable('signSession', ready && (actions.connect || custodySetup));
-    text('signSession', state.actor ? 'Request custody connection' : networkRegistered ? 'Network registered' : 'Register network in custody');
+    enable('signSession', canReconnect(state) || ready && (actions.connect || custodySetup));
+    text('signSession', canReconnect(state) ? 'Reconnect custody' : state.actor ? 'Request custody connection' : networkRegistered ? 'Network registered' : 'Register network in custody');
     text('custodyConnectionHelp', state.actor
-      ? state.operation?.kind === 'connect' && state.operation.state === 'awaiting_approval' ? 'Approve the pending site connection in the custody window. Deposit becomes available after connection approval; verify your saved backup before funding.'
+      ? canReconnect(state) ? 'The custody connection is no longer valid. Reconnect custody, approve the new site connection, then request deposit again.'
+        : state.connectionUnavailable ? 'The previous connection request is no longer available. Request custody connection again and approve the new request in custody.'
+        : state.operation?.kind === 'connect' && state.operation.state === 'awaiting_approval' ? 'Approve the pending site connection in the custody window. Deposit becomes available after connection approval; verify your saved backup before funding.'
         : 'Request connection to send this network to custody. Approve network registration, then approve the site connection. Verify your backup before funding.'
       : networkRegistered
         ? `Network registered. Connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'} here, then request custody connection to approve this site.`
@@ -123,7 +127,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
       ? `No exact note for ${preparation.amountBaseUnits} ${profile.denom}. Request a private transfer to your own approved address, then resume withdrawal to ${preparation.recipientAddress}. Each step needs separate approval and signing.`
       : preparingNote ? `Preparing ${preparation.amountBaseUnits} ${profile.denom} for withdrawal to ${preparation.recipientAddress}. ${actions.resumeWithdraw ? 'Preparation confirmed. Resume withdrawal approval.' : 'Finish every preparation step in custody before resuming.'}` : '');
     enable('custodySubmit', ready && actions.submit && !sendRecord);
-    enable('custodyRefresh', ready && Boolean(state.operation)); enable('custodyCancel', ready && actions.cancel);
+    enable('custodyRefresh', ready && Boolean(state.operation) && !state.connectionUnavailable); enable('custodyCancel', ready && actions.cancel);
     enable('cancelDepositProof', ready && actions.cancel);
     if ($('cancelDepositProof')) { $('cancelDepositProof').hidden = !actions.cancel; $('cancelDepositProof').textContent = 'Cancel before approval'; }
     enable('reconcileKeplrDeposit', ready && actions.reconcile);
@@ -134,9 +138,10 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     enable('nextEventsPage', ready && !eventsController && eventsHasMore);
     text('eventsPageState', eventsController ? 'Loading events…' : eventsPage ? `Page ${eventsPage} · Oldest first` : 'Events not loaded');
     const selected = state.activeOperation || state.operation;
-    text('custodyOperationState', statusLabels[state.operation?.state] || state.operation?.state || 'No request');
+    const operationState = state.connectionUnavailable ? 'Connection request unavailable' : statusLabels[state.operation?.state] || state.operation?.state || 'No request';
+    text('custodyOperationState', operationState);
     text('custodyOperationId', state.operation?.operationId);
-    text('custodyActiveStep', selected ? `${selected.kind || 'operation'} · ${statusLabels[selected.state] || selected.state} · ${selected.operationId}` : 'No active step');
+    text('custodyActiveStep', selected ? `${selected.kind || 'operation'} · ${state.connectionUnavailable ? operationState : statusLabels[selected.state] || selected.state} · ${selected.operationId}` : 'No active step');
     if ($('custodyRecoveryState')) $('custodyRecoveryState').hidden = !state.recoveryRequired;
     const steps = $('custodyOperationSteps');
     if (steps) {
@@ -262,7 +267,10 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   }
   on('connectKeplr', 'click', () => invoke(connectWallet)); on('connectWallet', 'click', () => invoke(connectWallet));
   on('signSession', 'click', () => {
+    const reconnect = canReconnect(runtime?.session.state || {});
+    if (reconnect) selectProfile($('dappChainSelect').value);
     return invoke(async r => {
+      if (reconnect) await connectWallet(r);
       // Public network registration is available before chain-wallet connection.
       // It must not negotiate capabilities or request site authority without an actor.
       if (!r.session.state.actor) return;
@@ -281,7 +289,8 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     await r.session.publicAccount();
     if ($('veiledTransferRecipient') && !$('veiledTransferRecipient').value) $('veiledTransferRecipient').value = r.session.state.publicAccount?.protocol.shieldedAddress || '';
   }));
-  on('depositFromKeplr', 'click', () => invokeSubmission(r => r.session.deposit($('keplrDepositAmount').value.trim())));
+  on('depositFromKeplr', 'click', () => invoke(r => withSubmissionLock(r,
+    () => r.session.deposit($('keplrDepositAmount').value.trim(), { beforeRequest: () => r.present() }))));
   on('transferFromVeiled', 'click', () => invokeSubmission(r => r.session.transfer($('veiledTransferAmount').value.trim(), {
     recipientShieldedAddress: $('veiledTransferRecipient').value.trim(), disclosure: transferDisclosure(), selfViewEnabled: $('includeSelfViewDisclosure').checked
   })));
