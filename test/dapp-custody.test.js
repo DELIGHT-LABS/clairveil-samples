@@ -40,7 +40,9 @@ function runtimeFixture({ profile, onChange }) {
     disconnect: async () => provider.invalidate()
   };
   const session = createCustodySession({ profile, provider, client, wallet: { connect: async () => actor, getActor: async () => actor }, onChange });
-  const runtime = { session, calls, provider, client, disposed: 0, connectWallet: () => session.connectWallet(),
+  const runtime = { session, calls, provider, client, disposed: 0, presentations: 0, registrations: 0,
+    registerNetwork: async () => { runtime.registrations++; await runtime.present(); },
+    present: async () => { runtime.presentations++; }, connectWallet: () => session.connectWallet(),
     setOperation: value => { op = value; }, dispose() { runtime.disposed++; session.dispose(); }, notify: onChange };
   return runtime;
 }
@@ -86,6 +88,64 @@ test('main sample keeps Wallet Session / Clair / Veiled and removes standalone/p
   const entry = await readFile(new URL('../public/dapp-entry.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(entry, /import\('\.\/app.js'\)|CustodyApp/);
   assert.match(entry, /DappView custody/);
+});
+
+test('wallet session registers the selected network before wallet connection without requesting authority', async t => {
+  for (const network of ['cosmos', 'evm']) {
+    const f = await mount(t);
+    f.$('dappChainSelect').value = network;
+    f.$('dappChainSelect').dispatchEvent(new f.dom.window.Event('change'));
+    const runtime = f.app.runtime;
+    runtime.client.getCapabilities = async () => { assert.fail('opening setup must not negotiate capabilities'); };
+    assert.equal(f.$('signSession').disabled, false);
+    assert.match(f.$('custodyConnectionHelp').textContent, new RegExp(network === 'cosmos' ? 'Keplr' : 'MetaMask'));
+    await f.click('signSession');
+    assert.equal(runtime.registrations, 1, 'send the selected network even before the chain wallet connects');
+    assert.equal(runtime.presentations, 1);
+    assert.deepEqual(runtime.calls, []);
+    assert.equal(runtime.session.state.actor, null);
+    assert.equal(f.$('depositFromKeplr').disabled, true);
+    assert.equal(f.$('signSession').textContent, 'Network registered');
+    assert.equal(f.$('signSession').disabled, true);
+    await f.click(network === 'cosmos' ? 'connectKeplr' : 'connectWallet');
+    assert.equal(f.$('signSession').textContent, 'Request custody connection');
+    assert.equal(f.$('signSession').disabled, false);
+    assert.equal(runtime.presentations, 1, 'chain wallet connection never opens custody');
+  }
+});
+
+test('wallet-free custody opening fences repeat clicks and reports missing extension', async t => {
+  const f = await mount(t), runtime = f.app.runtime;
+  let unavailable;
+  runtime.present = () => { runtime.presentations++; return new Promise((_, reject) => { unavailable = reject; }); };
+  await f.click('signSession');
+  assert.equal(f.$('signSession').disabled, true);
+  assert.equal(f.$('connectKeplr').disabled, true);
+  assert.equal(f.$('dappChainSelect').disabled, true);
+  await f.click('signSession');
+  assert.equal(runtime.presentations, 1);
+  unavailable(new Error('Extension unavailable'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(f.$('custodyError').textContent, /Extension unavailable/);
+  assert.equal(f.$('signSession').disabled, false);
+  assert.deepEqual(runtime.calls, []);
+});
+
+test('custody connection waits for network registration and rejection sends no capability or connect RPC', async t => {
+  const f = await mount(t), runtime = f.app.runtime;
+  await f.click('connectKeplr');
+  let rejectRegistration;
+  runtime.registerNetwork = () => new Promise((_, reject) => { runtime.registrations++; rejectRegistration = reject; });
+  runtime.client.getCapabilities = async () => { assert.fail('registration must complete before discovery'); };
+  await f.click('signSession');
+  assert.equal(runtime.registrations, 1); assert.equal(f.$('signSession').disabled, true);
+  await f.click('signSession'); assert.equal(runtime.registrations, 1);
+  assert.deepEqual(runtime.calls, []);
+  rejectRegistration(new Error('Network registration rejected'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(f.$('custodyError').textContent, /Network registration rejected/);
+  assert.deepEqual(runtime.calls, []);
+  assert.equal(f.$('signSession').disabled, false);
 });
 
 test('existing deposit control requests custody approval and separate signing dispatches once', async t => {
@@ -192,7 +252,9 @@ test('the withdrawal controls prepare an exact note and resume the original reci
   assert.equal(f.$('prepareWithdrawNote').hidden, false); assert.equal(f.$('prepareWithdrawNote').disabled, false);
   assert.match(f.$('withdrawPreparationState').textContent, /1000.*original-recipient/);
   assert.equal(f.app.runtime.calls.some(([kind]) => kind === 'transfer'), false);
+  const beforePreparation = f.app.runtime.presentations;
   await f.click('prepareWithdrawNote');
+  assert.equal(f.app.runtime.presentations, beforePreparation + 1);
   const request = f.app.runtime.calls.at(-1)[1];
   assert.equal(request.protocol.recipientShieldedAddress, 'clairs1qqqqqqqq');
   f.$('veiledWithdrawAmount').value = '2'; f.$('veiledWithdrawRecipient').value = 'edited-recipient';
@@ -200,7 +262,9 @@ test('the withdrawal controls prepare an exact note and resume the original reci
   f.app.runtime.setOperation({ operationId: 'transfer', kind: 'transfer', state: 'confirmed' }); await f.app.runtime.session.refresh();
   assert.equal(f.$('resumeWithdraw').hidden, false);
   assert.equal(f.app.runtime.calls.filter(([kind]) => kind === 'withdraw').length, 1);
+  const beforeResume = f.app.runtime.presentations;
   await f.click('resumeWithdraw');
+  assert.equal(f.app.runtime.presentations, beforeResume + 1);
   assert.equal(f.app.runtime.calls.at(-1)[1].protocol.amountBaseUnits, '1000');
   assert.equal(f.app.runtime.calls.at(-1)[1].protocol.recipientAddress, 'original-recipient');
   assert.equal(f.app.runtime.calls.some(([kind]) => kind === 'submit'), false);
@@ -596,7 +660,14 @@ test('main sample fences an unknown mutation and disposes on network change/page
   assert.equal(current.disposed, 1); assert.equal(f.$('custodySubmit').disabled, true);
 });
 
-test('main permissions stay opt-in and recovery consent never enables new work', async t => {
+test('main permissions default to the full flow, allow opting out and keep recovery access restricted', async t => {
+  const full = await mount(t);
+  assert.equal(full.$('custodyFullFlow').checked, true);
+  await full.click('connectKeplr');
+  assert.equal(full.app.runtime.calls.some(call => call[0] === 'connect'), false);
+  await full.click('signSession'); await full.app.runtime.session.refresh();
+  assert.deepEqual(full.app.runtime.calls.find(call => call[0] === 'connect')[1].permissions,
+    ['deposit.request', 'balance.read', 'account.read', 'transfer.request', 'withdraw.request', 'disclosure.request']);
   const f = await mount(t); await f.connect(false);
   assert.deepEqual(f.app.runtime.calls.find(call => call[0] === 'connect')[1].permissions, ['deposit.request']);
   assert.equal(f.$('transferFromVeiled').disabled, true); assert.equal(f.$('scanKeplrNotes').disabled, true);
@@ -851,4 +922,63 @@ test('pagehide during ordinary wallet account lookup aborts Cosmos signing', asy
   await assert.rejects(m.sendTransparent({ profile: { ...profiles.cosmos, prefix: 'clair' }, actor, browser, recipient: address, amount: '3', signal: controller.signal,
     fetchJson: async url => url.includes('/accounts/') ? { account: { address, account_number: '1', sequence: '1' } } : { result: { node_info: { network: 'synthetic-1' } } } }));
   assert.equal(signs, 0);
+});
+
+test('manual custody controls present the workbench before their RPC while ordinary reads and polling stay quiet', async t => {
+  const cases = [
+    ['setupKeplrPrivacy', 'getPublicAccount'], ['scanKeplrNotes', 'getBalances'],
+    ['depositFromKeplr', 'prepareDeposit'], ['transferFromVeiled', 'authorizeTransfer'], ['withdrawFromVeiled', 'authorizeWithdraw'],
+    ['custodyRefresh', 'getOperation', 'awaiting_approval'], ['custodyCancel', 'cancelOperation', 'awaiting_approval'],
+    ['cancelDepositProof', 'cancelOperation', 'awaiting_approval'], ['custodySubmit', 'submit', 'awaiting_chain_signature'],
+    ['reconcileKeplrDeposit', 'reconcile', 'submitted'], ['disconnectWallet', 'disconnect'],
+    ['decodeEventDisclosure', 'requestDisclosure'], ['decodeSelfViewDisclosure', 'requestDisclosure'], ['decodeDisclosureSource', 'requestDisclosure']
+  ];
+  for (const [id, method, operationState] of cases) {
+    const f = await mount(t); await f.click('connectKeplr');
+    assert.equal(f.app.runtime.presentations, 0, 'ordinary wallet connection does not open custody');
+    f.$('custodyFullFlow').checked = true;
+    await f.click('signSession'); await f.app.runtime.session.refresh();
+    assert.equal(f.app.runtime.presentations, 1, 'custody connection opens the workbench');
+    await f.app.runtime.session.publicAccount();
+    if (operationState) {
+      await f.app.runtime.session.deposit('1');
+      f.app.runtime.setOperation({ operationId: 'deposit', kind: 'deposit', state: operationState, publicArtifact: {} });
+      await f.app.runtime.session.refresh();
+    }
+    for (const field of ['keplrDepositAmount', 'veiledTransferAmount', 'veiledWithdrawAmount']) f.$(field).value = '1';
+    change(f, 'disclosureSourceTxHash', 'a'.repeat(64), 'input');
+    const runtime = f.app.runtime, before = runtime.presentations, original = runtime.client[method]; let calls = 0;
+    runtime.client[method] = async params => {
+      assert.equal(runtime.presentations, before + 1, `${id}: present before ${method}`); calls++; return original(params);
+    };
+    assert.equal(f.$(id).disabled, false, id); await f.click(id);
+    assert.equal(runtime.presentations, before + 1, id); assert.equal(calls, 1, id);
+  }
+  const f = await mount(t, { pollMs: 10 }); await f.connect(); f.$('keplrDepositAmount').value = '1'; await f.click('depositFromKeplr');
+  f.app.runtime.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'awaiting_approval' });
+  const before = f.app.runtime.presentations;
+  await new Promise(resolve => setTimeout(resolve, 45));
+  assert(f.app.runtime.calls.filter(([method]) => method === 'poll').length >= 2);
+  assert.equal(f.app.runtime.presentations, before, 'automatic polling does not present custody');
+});
+
+test('waiting for the workbench blocks double clicks and fences a late open after pagehide', async t => {
+  let balance;
+  const f = await mount(t, { chainActions: { readTransparentBalance: () => new Promise(resolve => { balance = resolve; }) } }); await f.click('connectKeplr');
+  await f.click('refreshKeplrBalance');
+  const runtime = f.app.runtime; let opened;
+  runtime.present = () => new Promise(resolve => { opened = resolve; });
+  await f.click('signSession'); assert.equal(f.$('signSession').disabled, true); assert.equal(f.$('disconnectWallet').disabled, true);
+  balance('1'); await tick(); assert.equal(f.$('signSession').disabled, true, 'an unrelated read cannot release the pending presentation');
+  await f.click('signSession'); assert.equal(runtime.calls.length, 0);
+  f.dom.window.dispatchEvent(new f.dom.window.Event('pagehide')); opened(); await tick();
+  assert.equal(runtime.calls.length, 0, 'late presentation never creates a custody request');
+});
+
+test('unavailable custody window leaves the action retryable without dispatching or inventing an operation', async t => {
+  const f = await mount(t); await f.click('connectKeplr');
+  f.app.runtime.present = async () => { throw new Error('Extension unavailable'); };
+  await f.click('signSession'); assert.equal(f.app.runtime.calls.length, 0); assert.equal(f.$('signSession').disabled, false);
+  assert.equal(f.app.runtime.session.state.uncertain, false); assert.equal(f.app.runtime.session.state.operation, null);
+  assert.match(f.$('custodyError').textContent, /Extension unavailable/);
 });

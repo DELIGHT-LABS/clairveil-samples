@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalCustodyBridge, REQUEST_CHANNEL, RESPONSE_CHANNEL } from '../public/custody-bridge.js';
+import { createLocalCustodyBridge, REQUEST_CHANNEL, RESPONSE_CHANNEL, PRESENT_CHANNEL, PRESENTED_CHANNEL,
+  REGISTER_NETWORK_CHANNEL, NETWORK_REGISTERED_CHANNEL, CANCEL_NETWORK_CHANNEL } from '../public/custody-bridge.js';
 function fixture() {
   const events = new Set(), sent = [];
   const page = { location: { origin: 'http://127.0.0.1:4320' }, addEventListener: (_, fn) => events.add(fn), removeEventListener: (_, fn) => events.delete(fn), postMessage: message => sent.push(message) };
@@ -45,4 +46,55 @@ test('oversize responses are ignored and an outstanding ID cannot be reused', as
   await assert.rejects(bridge.exchange({ id: 'one' }));
   f.deliver({ channel: RESPONSE_CHANNEL, payload: JSON.stringify({ id: 'one', result: '가'.repeat(180000) }) });
   await assert.rejects(pending); bridge.close();
+});
+
+test('explicit presentation waits for a matching acknowledgement and never sends an RPC', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page);
+  const pending = bridge.present(); assert.equal(bridge.present(), pending);
+  const request = f.sent[0]; assert.equal(request.channel, PRESENT_CHANNEL); assert.equal(f.sent.length, 1);
+  let done = false; pending.then(() => { done = true; });
+  const reply = { channel: PRESENTED_CHANNEL, id: request.id, opened: true };
+  f.deliver(reply, { source: {} }); f.deliver(reply, { origin: 'https://wrong.example' });
+  f.deliver({ ...reply, id: 'other' }); f.deliver({ ...reply, extra: true });
+  await Promise.resolve(); assert.equal(done, false);
+  f.deliver(reply); await pending; assert.equal(f.sent.length, 1); bridge.close();
+});
+
+test('presentation failure, timeout and closure stop locally without replay or session authority', async () => {
+  for (const outcome of ['refused', 'timeout', 'close']) {
+    const f = fixture(), bridge = createLocalCustodyBridge(f.page, { presentationTimeoutMs: 10 });
+    const pending = bridge.present(), failed = assert.rejects(pending);
+    if (outcome === 'refused') f.deliver({ channel: PRESENTED_CHANNEL, id: f.sent[0].id, opened: false });
+    if (outcome === 'close') bridge.close();
+    await failed; assert.equal(f.sent.length, 1); bridge.close();
+  }
+});
+
+test('registration sends only the descriptor and waits for its bounded, same-window acknowledgement', async () => {
+  const f = fixture(), bridge = createLocalCustodyBridge(f.page), descriptor = { name: 'Synthetic local network' };
+  const pending = bridge.registerNetwork(descriptor);
+  assert.equal(bridge.registerNetwork(descriptor), pending);
+  await assert.rejects(bridge.registerNetwork({ name: 'Another' }));
+  const request = f.sent[0]; assert.equal(request.channel, REGISTER_NETWORK_CHANNEL);
+  assert.deepEqual(JSON.parse(request.payload), descriptor);
+  let done = false; pending.then(() => { done = true; });
+  const reply = { channel: NETWORK_REGISTERED_CHANNEL, id: request.id, status: 'registered' };
+  f.deliver(reply, { source: {} }); f.deliver(reply, { origin: 'https://other.invalid' });
+  f.deliver({ ...reply, extra: true }); f.deliver({ ...reply, id: 'another' }); f.deliver({ ...reply, status: 'accepted' });
+  await Promise.resolve(); assert.equal(done, false);
+  f.deliver(reply); await pending;
+  assert.equal(f.sent.length, 1, 'network registration is not a privacy RPC');
+  bridge.close();
+});
+test('registration rejection, conflict, timeout and disposal never replay or request site access', async () => {
+  for (const outcome of ['rejected', 'conflict', 'invalid', 'unavailable', 'timeout', 'close']) {
+    const f = fixture(), bridge = createLocalCustodyBridge(f.page, { registrationTimeoutMs: 10 });
+    const pending = bridge.registerNetwork({ name: 'Synthetic' }), rejected = assert.rejects(pending);
+    if (outcome === 'close') bridge.close();
+    else if (outcome !== 'timeout') f.deliver({ channel: NETWORK_REGISTERED_CHANNEL, id: f.sent[0].id, status: outcome });
+    await rejected;
+    assert.equal(f.sent.length, ['timeout', 'close'].includes(outcome) ? 2 : 1);
+    if (f.sent.length === 2) assert.equal(f.sent[1].channel, CANCEL_NETWORK_CHANNEL);
+    bridge.close();
+  }
 });

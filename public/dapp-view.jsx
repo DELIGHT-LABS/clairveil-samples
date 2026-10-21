@@ -87,12 +87,12 @@ function WalletSession({ custody }) {
           <div className="panel-heading">
             <h2>Wallet Session</h2>
             <div className="session-actions">
-              <button id="signSession" type="button" disabled>{custody ? "Request custody connection" : "Sign Session"}</button>
+              <button id="signSession" type="button" disabled>{custody ? "Register network in custody" : "Sign Session"}</button>
             </div>
           </div>
           {custody && <>
-            <p className="quiet">Create/unlock the extension vault, verify its independent backup and activate the selected local network before connecting.</p>
-            <label className="checkbox-control"><input id="custodyFullFlow" type="checkbox" /> Request address, balance, transfer, withdraw and disclosure permissions</label>
+            <p id="custodyConnectionHelp" className="quiet">Register the selected network in custody first. Then connect Keplr or MetaMask and request a custody connection to approve this site.</p>
+            <label className="checkbox-control"><input id="custodyFullFlow" type="checkbox" defaultChecked /> Request address, balance, transfer, withdraw and disclosure permissions</label>
             <label className="field"><span>Recovery operation IDs (optional; inspect only)</span><input id="custodyRecoveryIds" placeholder="Public operation IDs, comma separated" /></label>
             <p id="custodyError" className="inline-warning" role="alert" hidden />
           </>}

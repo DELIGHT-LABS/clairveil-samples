@@ -16,11 +16,16 @@ async function verifyLocalHost(samplePin) {
   for (const [name, expected] of Object.entries(evidence.files)) {
     if (createHash('sha256').update(await readFile(path.join(source, name))).digest('hex') !== expected) throw new Error('CUSTODY_BUILD_CHANGED');
   }
-  const { deployments, networks } = JSON.parse(await readFile(path.join(source, 'profiles.json')));
+  const { deployments, networks, registrations } = JSON.parse(await readFile(path.join(source, 'profiles.json')));
+  if (!Array.isArray(registrations) || registrations.length !== deployments.length) {
+    throw new Error('CUSTODY_NETWORK_REGISTRATION_BUILD_REQUIRED: rebuild the local custody host before building this sample');
+  }
   const profiles = JSON.stringify(Object.fromEntries(deployments.map(({ preparation: p }) => {
     const network = networks.find(value => value.networkId === p.reader.networkId);
-    if (!network) throw new Error('CUSTODY_NETWORK_MISSING');
+    const registration = registrations.find(value => value.deployment.preparation.reader.networkId === p.reader.networkId);
+    if (!network || !registration) throw new Error('CUSTODY_NETWORK_MISSING');
     return [p.transport, { id: p.reader.networkId, transport: p.transport, chainId: p.reader.chainId,
+      registration,
       caip: network.chainId, profileDigest: network.profileDigest, denom: p.denom, prefix: p.accountPrefix,
       rpc: p.reader.rpc, rest: p.reader.rest, evmRpc: p.evmRpc, evmChainId: p.evmChainId, contract: p.contract }];
   })), null, 2);

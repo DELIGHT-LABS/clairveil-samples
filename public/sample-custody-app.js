@@ -17,6 +17,8 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   let profiles, profile, runtime, generation = 0, alive = true, timer, localError = '', publicBusy = false;
   let sendRecord = null, publicController;
   let serverConfig = null, faucetRecord = null;
+  let custodyOpening = false;
+  let networkRegistered = false;
   let disclosureRevision = 0, disclosureRequest = null, disclosureLookup = null;
   let eventsPage = 0, eventsHasMore = false, eventsController = null;
   const text = (id, value) => { if ($(id)) $(id).textContent = value ?? '—'; };
@@ -67,7 +69,8 @@ export function startSampleCustody({ createRuntime, browser = window, document =
       return action(r);
     });
   }
-  const invokeSubmission = action => invoke(r => withSubmissionLock(r, action));
+  const invokeCustody = action => invoke(action, { present: true });
+  const invokeSubmission = action => invokeCustody(r => withSubmissionLock(r, action));
   const syncSendRecord = event => {
     const actor = runtime?.session.state.actor;
     if (!alive || !actor || (event?.type === 'storage' && event.key !== null && ![sendKey(actor), faucetKey(actor)].includes(event.key))) return;
@@ -79,7 +82,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   function render() {
     if (!alive) return;
     const state = runtime?.session.state || {}, actions = custodyActions(state);
-    const ready = Boolean(runtime && !state.busy && !state.invalidated && !publicBusy);
+    const ready = Boolean(runtime && !state.busy && !state.invalidated && !publicBusy && !custodyOpening);
     text('modeBadge', 'Custody privacy · local test');
     text('walletStatus', state.actor ? 'Chain wallet connected' : 'Wallet Offline');
     text('sessionWallet', state.actor ? profile.transport === 'cosmos' ? 'Keplr' : 'MetaMask' : 'Not connected');
@@ -90,13 +93,22 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     text('chainId', profile?.caip); text('dappChainHint', profile ? `${profile.chainId} · ${profile.denom}` : 'Loading custody network profiles');
     enable('connectWallet', ready && !state.actor && profile.transport === 'evm');
     enable('connectKeplr', ready && !state.actor && profile.transport === 'cosmos');
-    enable('disconnectWallet', Boolean(runtime && state.actor && !publicBusy && canResetCustodySession(state)));
+    enable('disconnectWallet', Boolean(runtime && state.actor && !publicBusy && !custodyOpening && canResetCustodySession(state)));
     if ($('disconnectWallet')) $('disconnectWallet').title = canResetCustodySession(state) ? '' : 'Inspect or finish the outstanding custody operation before disconnecting; its ID and submission state are retained.';
     if ($('disconnectWallet')) $('disconnectWallet').hidden = !state.actor;
-    enable('signSession', ready && actions.connect); enable('setupKeplrPrivacy', ready && state.connection?.permissions.includes('account.read'));
+    const custodySetup = !state.actor && !state.connection && !state.operation && !state.uncertain && !networkRegistered;
+    enable('signSession', ready && (actions.connect || custodySetup));
+    text('signSession', state.actor ? 'Request custody connection' : networkRegistered ? 'Network registered' : 'Register network in custody');
+    text('custodyConnectionHelp', state.actor
+      ? state.operation?.kind === 'connect' && state.operation.state === 'awaiting_approval' ? 'Approve the pending site connection in the custody window. Deposit becomes available after connection approval; verify your saved backup before funding.'
+        : 'Request connection to send this network to custody. Approve network registration, then approve the site connection. Verify your backup before funding.'
+      : networkRegistered
+        ? `Network registered. Connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'} here, then request custody connection to approve this site.`
+        : `Send the selected network to custody for registration approval. Then connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'} here and request custody connection.`);
+    enable('setupKeplrPrivacy', ready && state.connection?.permissions.includes('account.read'));
     enable('refreshKeplrBalance', ready && Boolean(state.actor));
     enable('copyWalletAccount', Boolean(state.actor)); enable('copyKeplrShieldedAddress', Boolean(state.publicAccount));
-    enable('dappChainSelect', Boolean(profiles) && !publicBusy && !state.busy && !state.actor && !state.uncertain);
+    enable('dappChainSelect', Boolean(profiles) && !publicBusy && !custodyOpening && !state.busy && !state.actor && !state.uncertain);
     enable('custodyFullFlow', ready && (!state.operation || actions.connect) && !state.connection);
     enable('custodyRecoveryIds', ready && (!state.operation || actions.connect) && !state.connection);
     enable('depositFromKeplr', ready && actions.deposit && !sendRecord);
@@ -138,7 +150,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
       recovery.replaceChildren();
       for (const id of state.connection?.recoveryAccess?.operationIds || []) {
         const button = document.createElement('button'); button.type = 'button'; button.textContent = `Inspect ${id.slice(0, 8)}…`; button.disabled = !ready;
-        button.addEventListener('click', () => invoke(r => r.session.inspectRecovery(id))); recovery.append(button);
+        button.addEventListener('click', () => invokeCustody(r => r.session.inspectRecovery(id))); recovery.append(button);
       }
     }
     const balances = state.balances;
@@ -163,7 +175,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
       ['eventDisclosureDigest', pageDisclosure?.target?.digestHex], ['eventDisclosureVerified', pageDisclosure ? 'Verified by custody' : null]
     ]) text(id, value);
     text('eventDisclosureState', disclosure ? disclosure.delivery === 'trusted-wallet' ? 'View the released result in custody' : pageDisclosure ? 'Approved disclosure fields verified' : 'Disclosure unverified' : 'Request disclosure and approve its release in custody');
-    const message = localError || state.error || (state.uncertain ? 'Request result unknown. Inspect custody; do not repeat the request.'
+    const message = custodyOpening ? 'Opening custody… Unlock or review the request in the extension.' : localError || state.error || (state.uncertain ? 'Request result unknown. Inspect custody; do not repeat the request.'
       : exactWithdrawNoteRequired(state.operation) ? 'An exact-value note is required. Use the withdrawal preparation action or correct the withdrawal amount.' : '');
     text('custodyError', message); if ($('custodyError')) $('custodyError').hidden = !message;
     text('keplrTxState', publicBusy ? 'Chain wallet request pending' : sendRecord ? 'Public send pending; reconcile before another submission' : statusLabels[selected?.state] || 'Ready');
@@ -181,17 +193,27 @@ export function startSampleCustody({ createRuntime, browser = window, document =
       text('keplrFaucetSent', 'Pending confirmation'); text('keplrFaucetRecipient', state.actor?.address);
     }
   }
-  async function invoke(action) {
-    if (!alive || !runtime || publicBusy) return;
+  async function invoke(action, { present = false, registerNetwork = false } = {}) {
+    if (!alive || !runtime || publicBusy || custodyOpening || (present && runtime.session.state.busy)) return;
     const current = runtime, stamp = generation; localError = '';
-    try { await action(current); }
+    try {
+      if (present) {
+        custodyOpening = true; render();
+        if (registerNetwork) await current.registerNetwork();
+        else await current.present();
+        if (!alive || stamp !== generation || current !== runtime || current.session.state.invalidated) return;
+        if (registerNetwork) networkRegistered = true;
+      }
+      await action(current);
+    }
     catch (cause) { if (alive && stamp === generation) localError = current.session.state.error || cause.message; }
+    finally { if (present && stamp === generation) custodyOpening = false; }
     if (alive && stamp === generation) render();
   }
   function selectProfile(id) {
     runtime?.dispose(); clearInterval(timer); generation++;
     resetDisclosure({ clearTransaction: true, clearEvent: true }); resetEvents();
-    runtime = null; profile = profiles[id]; localError = ''; sendRecord = null; faucetRecord = null;
+    runtime = null; profile = profiles[id]; localError = ''; sendRecord = null; faucetRecord = null; custodyOpening = false; networkRegistered = false;
     for (const field of ['veiledTransferRecipient', 'veiledWithdrawRecipient']) $(field).value = '';
     for (const field of ['keplrSendHash', 'keplrDepositHash', 'keplrTransferHash', 'keplrWithdrawHash', 'keplrFaucetHash', 'keplrFaucetSent', 'keplrFaucetRecipient']) text(field, '—');
     text('myClairBalance', 'Unknown'); text('keplrBalance', 'Unknown');
@@ -239,15 +261,23 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     text('myClairBalance', `${value} ${profile.denom}`); text('keplrBalance', `${value} ${profile.denom}`);
   }
   on('connectKeplr', 'click', () => invoke(connectWallet)); on('connectWallet', 'click', () => invoke(connectWallet));
-  on('signSession', 'click', () => invoke(r => r.session.connectCustody({ fullFlow: $('custodyFullFlow').checked,
-    recoveryOperationIds: $('custodyRecoveryIds').value.trim().split(/[,\s]+/).filter(Boolean) })));
-  on('disconnectWallet', 'click', async () => {
+  on('signSession', 'click', () => {
+    return invoke(async r => {
+      // Public network registration is available before chain-wallet connection.
+      // It must not negotiate capabilities or request site authority without an actor.
+      if (!r.session.state.actor) return;
+      return r.session.connectCustody({ fullFlow: $('custodyFullFlow').checked,
+        recoveryOperationIds: $('custodyRecoveryIds').value.trim().split(/[,\s]+/).filter(Boolean) });
+    }, { present: true, registerNetwork: true });
+  });
+  on('disconnectWallet', 'click', () => {
     const r = runtime, stamp = generation;
     if (!alive || !r || publicBusy || !canResetCustodySession(r.session.state)) return;
-    try { await r.session.disconnect(); if (alive && stamp === generation && r === runtime) selectProfile($('dappChainSelect').value); }
-    catch (cause) { if (alive && stamp === generation) error(cause.message); }
+    return invoke(async () => {
+      await r.session.disconnect(); if (alive && stamp === generation && r === runtime) selectProfile($('dappChainSelect').value);
+    }, { present: Boolean(r.session.state.connection) && !r.session.state.invalidated });
   });
-  on('setupKeplrPrivacy', 'click', () => invoke(async r => {
+  on('setupKeplrPrivacy', 'click', () => invokeCustody(async r => {
     await r.session.publicAccount();
     if ($('veiledTransferRecipient') && !$('veiledTransferRecipient').value) $('veiledTransferRecipient').value = r.session.state.publicAccount?.protocol.shieldedAddress || '';
   }));
@@ -268,18 +298,18 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   on('prepareWithdrawNote', 'click', () => invokeSubmission(r => r.session.prepareWithdrawNote()));
   on('resumeWithdraw', 'click', () => invokeSubmission(r => r.session.resumeWithdraw()));
   on('custodySubmit', 'click', () => invokeSubmission(r => r.session.submit()));
-  on('custodyRefresh', 'click', () => invoke(r => r.session.refresh()));
-  on('custodyCancel', 'click', () => invoke(r => r.session.cancel()));
-  on('cancelDepositProof', 'click', () => invoke(r => r.session.cancel()));
-  on('reconcileKeplrDeposit', 'click', () => invoke(r => r.session.reconcile()));
-  on('scanKeplrNotes', 'click', () => invoke(r => r.session.balances()));
+  on('custodyRefresh', 'click', () => invokeCustody(r => r.session.refresh()));
+  on('custodyCancel', 'click', () => invokeCustody(r => r.session.cancel()));
+  on('cancelDepositProof', 'click', () => invokeCustody(r => r.session.cancel()));
+  on('reconcileKeplrDeposit', 'click', () => invokeCustody(r => r.session.reconcile()));
+  on('scanKeplrNotes', 'click', () => invokeCustody(r => r.session.balances()));
   on('refreshKeplrBalance', 'click', () => invoke(readBalance));
   function disclosure(plane) {
     if (disclosureLookup) return;
     if (plane) $('disclosureSourcePlane').value = plane === 'self_view' ? 'self-view' : 'user';
     resetDisclosure();
     const selection = disclosureSelection(), request = { ...selection, revision: disclosureRevision, generation };
-    return invoke(async r => {
+    return invokeCustody(async r => {
       await r.session.disclosure(selection);
       if (alive && r === runtime && !r.session.state.invalidated && matchesSelection(request)) {
         disclosureRequest = { ...request, operationId: r.session.state.operation.operationId };

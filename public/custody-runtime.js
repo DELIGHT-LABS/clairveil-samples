@@ -20,6 +20,8 @@ export function createCustodyRuntime({ profile, onChange, browser = window }) {
   } catch (error) { provider.dispose(); bridge.close(); throw error; }
   return {
     session,
+    present: () => bridge.present(),
+    registerNetwork: () => bridge.registerNetwork(profile.registration),
     async connectWallet() {
       await session.connectWallet();
       if (disposed) return;
