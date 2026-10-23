@@ -18,7 +18,6 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   let sendRecord = null, publicController;
   let serverConfig = null, faucetRecord = null;
   let custodyOpening = false;
-  let networkRegistered = false;
   let disclosureRevision = 0, disclosureRequest = null, disclosureLookup = null;
   let eventsPage = 0, eventsHasMore = false, eventsController = null;
   const text = (id, value) => { const node = $(id), content = value ?? '—'; if (node && node.textContent !== content) node.textContent = content; };
@@ -98,17 +97,15 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     enable('disconnectWallet', Boolean(runtime && state.actor && !publicBusy && !custodyOpening && canResetCustodySession(state)));
     if ($('disconnectWallet')) $('disconnectWallet').title = canResetCustodySession(state) ? '' : 'Inspect or finish the outstanding custody operation before disconnecting; its ID and submission state are retained.';
     if ($('disconnectWallet')) $('disconnectWallet').hidden = !state.actor;
-    const custodySetup = !state.actor && !state.connection && !state.operation && !state.uncertain && !networkRegistered;
+    const custodySetup = !state.actor && !state.connection && !state.operation && !state.uncertain;
     enable('signSession', canReconnect(state) || ready && (actions.connect || custodySetup));
-    text('signSession', canReconnect(state) ? 'Reconnect custody' : state.actor ? 'Request custody connection' : networkRegistered ? 'Network registered' : 'Register network in custody');
+    text('signSession', canReconnect(state) ? 'Reconnect custody' : 'Request custody connection');
     text('custodyConnectionHelp', state.actor
       ? canReconnect(state) ? 'The custody connection is no longer valid. Reconnect custody, approve the new site connection, then request deposit again.'
         : state.connectionUnavailable ? 'The previous connection request is no longer available. Request custody connection again and approve the new request in custody.'
         : state.operation?.kind === 'connect' && state.operation.state === 'awaiting_approval' ? 'Approve the pending site connection in the custody window. Deposit becomes available after connection approval; verify your saved backup before funding.'
         : 'Request connection to send this network to custody. Approve network registration, then approve the site connection. Verify your backup before funding.'
-      : networkRegistered
-        ? `Network registered. Connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'} here, then request custody connection to approve this site.`
-        : `Send the selected network to custody for registration approval. Then connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'} here and request custody connection.`);
+      : `Request connection to register this network if needed, connect ${profile?.transport === 'evm' ? 'MetaMask' : 'Keplr'}, and review the site connection in custody.`);
     enable('setupKeplrPrivacy', ready && state.connection?.permissions.includes('account.read'));
     enable('refreshKeplrBalance', ready && Boolean(state.actor));
     enable('copyWalletAccount', Boolean(state.actor)); enable('copyKeplrShieldedAddress', Boolean(state.publicAccount));
@@ -208,7 +205,6 @@ export function startSampleCustody({ createRuntime, browser = window, document =
         if (registerNetwork) await current.registerNetwork();
         else await current.present();
         if (!alive || stamp !== generation || current !== runtime || current.session.state.invalidated) return;
-        if (registerNetwork) networkRegistered = true;
       }
       await action(current);
     }
@@ -219,7 +215,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   function selectProfile(id) {
     runtime?.dispose(); clearInterval(timer); generation++;
     resetDisclosure({ clearTransaction: true, clearEvent: true }); resetEvents();
-    runtime = null; profile = profiles[id]; localError = ''; sendRecord = null; faucetRecord = null; custodyOpening = false; networkRegistered = false;
+    runtime = null; profile = profiles[id]; localError = ''; sendRecord = null; faucetRecord = null; custodyOpening = false;
     for (const field of ['veiledTransferRecipient', 'veiledWithdrawRecipient']) $(field).value = '';
     for (const field of ['keplrSendHash', 'keplrDepositHash', 'keplrTransferHash', 'keplrWithdrawHash', 'keplrFaucetHash', 'keplrFaucetSent', 'keplrFaucetRecipient']) text(field, '—');
     text('myClairBalance', 'Unknown'); text('keplrBalance', 'Unknown');
@@ -276,10 +272,10 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     const reconnect = canReconnect(runtime?.session.state || {});
     if (reconnect) selectProfile($('dappChainSelect').value);
     return invoke(async r => {
-      if (reconnect) await connectWallet(r);
-      // Public network registration is available before chain-wallet connection.
-      // It must not negotiate capabilities or request site authority without an actor.
-      if (!r.session.state.actor) return;
+      // A reloaded document has no in-memory wallet actor. Continue this explicit
+      // gesture through wallet connection instead of stopping after registration.
+      // Discovery and site consent still wait for a validated chain actor.
+      if (!r.session.state.actor) await connectWallet(r);
       return r.session.connectCustody({ fullFlow: $('custodyFullFlow').checked,
         recoveryOperationIds: $('custodyRecoveryIds').value.trim().split(/[,\s]+/).filter(Boolean) });
     }, { present: true, registerNetwork: true });

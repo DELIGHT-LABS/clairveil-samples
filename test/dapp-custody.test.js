@@ -90,28 +90,75 @@ test('main sample keeps Wallet Session / Clair / Veiled and removes standalone/p
   assert.match(entry, /DappView custody/);
 });
 
-test('wallet session registers the selected network before wallet connection without requesting authority', async t => {
+test('an explicit connection click registers the network, connects its wallet and requests site consent', async t => {
   for (const network of ['cosmos', 'evm']) {
     const f = await mount(t);
     f.$('dappChainSelect').value = network;
     f.$('dappChainSelect').dispatchEvent(new f.dom.window.Event('change'));
     const runtime = f.app.runtime;
-    runtime.client.getCapabilities = async () => { assert.fail('opening setup must not negotiate capabilities'); };
     assert.equal(f.$('signSession').disabled, false);
     assert.match(f.$('custodyConnectionHelp').textContent, new RegExp(network === 'cosmos' ? 'Keplr' : 'MetaMask'));
     await f.click('signSession');
     assert.equal(runtime.registrations, 1, 'send the selected network even before the chain wallet connects');
     assert.equal(runtime.presentations, 1);
-    assert.deepEqual(runtime.calls, []);
-    assert.equal(runtime.session.state.actor, null);
+    assert.equal(runtime.calls.filter(([method]) => method === 'connect').length, 1);
+    assert.equal(runtime.session.state.actor.namespace, network === 'cosmos' ? 'cosmos' : 'eip155');
+    assert.equal(runtime.session.state.connection, null, 'network registration is not site consent');
     assert.equal(f.$('depositFromKeplr').disabled, true);
-    assert.equal(f.$('signSession').textContent, 'Network registered');
-    assert.equal(f.$('signSession').disabled, true);
-    await f.click(network === 'cosmos' ? 'connectKeplr' : 'connectWallet');
     assert.equal(f.$('signSession').textContent, 'Request custody connection');
-    assert.equal(f.$('signSession').disabled, false);
-    assert.equal(runtime.presentations, 1, 'chain wallet connection never opens custody');
+    assert.equal(f.$('signSession').disabled, true, 'one pending connection cannot be requested twice');
+    assert.equal(runtime.presentations, 1, 'the whole explicit connection uses one custody presentation');
   }
+});
+
+test('after a document reload one explicit connection click restores the wallet and sends fresh site consent', async t => {
+  for (const network of ['cosmos', 'evm']) {
+    const original = await mount(t);
+    change(original, 'dappChainSelect', network);
+    await original.click(network === 'cosmos' ? 'connectKeplr' : 'connectWallet');
+    await original.click('signSession'); await original.app.runtime.session.refresh();
+    assert.equal(original.$('walletSignatureHash').textContent, 'Approved by custody');
+    original.dom.window.dispatchEvent(new original.dom.window.Event('pagehide'));
+
+    const fresh = await mount(t);
+    change(fresh, 'dappChainSelect', network);
+    const runtime = fresh.app.runtime;
+    let walletConnections = 0, registered;
+    const connectWallet = runtime.connectWallet;
+    runtime.connectWallet = () => { walletConnections++; return connectWallet(); };
+    runtime.registerNetwork = () => new Promise(resolve => { runtime.registrations++; registered = resolve; });
+    assert.equal(runtime.session.state.connection, null, 'page reload never restores old custody authority');
+    assert.equal(walletConnections, 0, 'mount never opens a wallet');
+    await fresh.click('signSession'); await fresh.click('signSession');
+    assert.equal(runtime.registrations, 1);
+    assert.equal(walletConnections, 0, 'network registration must finish before connecting the chain wallet');
+    assert.deepEqual(runtime.calls, []);
+    registered(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(walletConnections, 1, 'the same click continues to wallet connection after registration');
+    assert.equal(runtime.calls.filter(([method]) => method === 'connect').length, 1);
+    assert.equal(runtime.session.state.connection, null, 'fresh consent is still required');
+    assert.equal(fresh.$('depositFromKeplr').disabled, true);
+    await runtime.session.refresh();
+    assert.equal(fresh.$('walletSignatureHash').textContent, 'Approved by custody');
+    assert.equal(fresh.$('depositFromKeplr').disabled, false);
+  }
+});
+
+test('a rejected chain-wallet connection stops site consent and leaves the explicit connection action available', async t => {
+  const f = await mount(t), runtime = f.app.runtime;
+  let decline;
+  runtime.connectWallet = () => new Promise((_, reject) => { decline = reject; });
+  runtime.client.getCapabilities = async () => { assert.fail('a missing chain actor cannot request site consent'); };
+  await f.click('signSession');
+  assert.equal(typeof decline, 'function');
+  assert.equal(f.$('signSession').disabled, true);
+  await f.click('signSession'); assert.equal(runtime.registrations, 1);
+  decline(new Error('Wallet connection rejected'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(f.$('custodyError').textContent, /Wallet connection rejected/);
+  assert.equal(f.$('signSession').disabled, false);
+  assert.equal(runtime.session.state.actor, null);
+  assert.deepEqual(runtime.calls, []);
 });
 
 test('wallet-free custody opening fences repeat clicks and reports missing extension', async t => {
