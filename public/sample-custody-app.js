@@ -21,8 +21,8 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   let networkRegistered = false;
   let disclosureRevision = 0, disclosureRequest = null, disclosureLookup = null;
   let eventsPage = 0, eventsHasMore = false, eventsController = null;
-  const text = (id, value) => { if ($(id)) $(id).textContent = value ?? '—'; };
-  const enable = (id, value) => { if ($(id)) $(id).disabled = !value; };
+  const text = (id, value) => { const node = $(id), content = value ?? '—'; if (node && node.textContent !== content) node.textContent = content; };
+  const enable = (id, value) => { const node = $(id); if (node && node.disabled !== !value) node.disabled = !value; };
   const on = (id, event, callback) => {
     if (!$(id)) return;
     $(id).addEventListener(event, callback); listeners.push(() => $(id)?.removeEventListener(event, callback));
@@ -181,6 +181,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     ]) text(id, value);
     text('eventDisclosureState', disclosure ? disclosure.delivery === 'trusted-wallet' ? 'View the released result in custody' : pageDisclosure ? 'Approved disclosure fields verified' : 'Disclosure unverified' : 'Request disclosure and approve its release in custody');
     const message = custodyOpening ? 'Opening custody… Unlock or review the request in the extension.' : localError || state.error || (state.uncertain ? 'Request result unknown. Inspect custody; do not repeat the request.'
+      : state.reconciliationExhausted ? 'Automatic chain checks paused. Use Reconcile deposit tx or Refresh operation to inspect the existing attempt.'
       : exactWithdrawNoteRequired(state.operation) ? 'An exact-value note is required. Use the withdrawal preparation action or correct the withdrawal amount.' : '');
     text('custodyError', message); if ($('custodyError')) $('custodyError').hidden = !message;
     text('keplrTxState', publicBusy ? 'Chain wallet request pending' : sendRecord ? 'Public send pending; reconcile before another submission' : statusLabels[selected?.state] || 'Ready');
@@ -227,6 +228,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     try {
       runtime = createRuntime({ profile, browser, onChange: state => {
         if (!alive || stamp !== generation) return;
+        if (!state.invalidated && state.operation?.state === 'confirmed') localError = '';
         if (state.invalidated) { publicController?.abort(); resetDisclosure({ clearTransaction: true, clearEvent: true }); resetEvents(); text('myClairBalance', 'Unknown'); text('keplrBalance', 'Unknown'); }
         if (state.operation?.kind === 'deposit') {
           text('keplrDepositStage', statusLabels[state.operation.state] || state.operation.state);
@@ -241,7 +243,11 @@ export function startSampleCustody({ createRuntime, browser = window, document =
         render();
       } });
       timer = setInterval(() => {
-        if (alive && stamp === generation && !publicBusy && !runtime.session.state.busy && !runtime.session.state.invalidated && custodyActions(runtime.session.state).poll) invoke(r => r.session.refresh());
+        if (alive && stamp === generation && !publicBusy && !custodyOpening) {
+          // Session polling coalesces reads and preserves foreground controls.
+          // Its error state is rendered without clearing a previous action error.
+          void runtime.session.poll().catch(() => {});
+        }
       }, pollMs);
     } catch (cause) { error(cause.message); }
     text('depositProverPrivacyNotice', 'Review amount, destination and remote prover witness disclosure in custody. The page receives no private witness.');

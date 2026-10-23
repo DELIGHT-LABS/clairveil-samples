@@ -22,7 +22,7 @@ function fixture(overrides = {}) {
     ...overrides.client
   };
   const wallet = { connect: async () => actor, getActor: async () => actor, ...overrides.wallet };
-  const session = createCustodySession({ client, provider, wallet, profile });
+  const session = createCustodySession({ client, provider, wallet, profile, now: overrides.now, onChange: overrides.onChange });
   return { session, provider, calls, actor, connection, client, setOperation: value => { operation = value; },
     async connect() { await session.connectWallet(); await session.connectCustody(); await session.refresh(); } };
 }
@@ -227,6 +227,68 @@ test('uncertain submission never enables a second wallet dispatch', async () => 
   f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'awaiting_chain_signature' }); await f.session.refresh();
   await assert.rejects(f.session.submit()); await assert.rejects(f.session.submit()); assert.equal(submissions, 1);
   await assert.rejects(f.session.cancel());
+});
+
+test('background confirmation reconciles the existing attempt with bounded backoff and never signs again', async () => {
+  let time = 0;
+  const f = fixture({ now: () => time }); await f.connect(); await f.session.deposit('7');
+  const pending = { operationId: 'deposit', kind: 'deposit', state: 'submission_unknown', statusRevision: '3',
+    submissionAttempt: { attemptId: 'attempt', state: 'unresolved' }, jobState: 'queued' };
+  f.setOperation(pending);
+  await f.session.poll();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 1);
+  assert.equal(f.session.state.operation.state, 'submission_unknown', 'a reconciliation ACK is not confirmation');
+  for (let i = 0; i < 5; i++) await f.session.poll();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 1, 'no tight reconciliation loop');
+  time = 5000; f.setOperation({ ...pending, jobState: 'running' }); await f.session.poll();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 1, 'same-revision running job suppresses duplicate scheduling');
+  f.setOperation(pending);
+  for (let i = 0; i < 10; i++) { time += 30000; await f.session.poll(); }
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 6, 'automatic checks have a finite budget');
+  assert.equal(f.session.state.reconciliationExhausted, true);
+  assert.equal(custodyActions(f.session.state).deposit, false);
+  assert.equal(custodyActions(f.session.state).submit, false);
+  assert.equal(f.calls.filter(([name]) => name === 'submit').length, 0);
+  await f.session.reconcile();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 7, 'explicit inspection stays available');
+  f.setOperation({ ...pending, state: 'confirmed', statusRevision: '4', transactionHash: 'a'.repeat(64) });
+  await f.session.poll();
+  assert.equal(f.session.state.operation.state, 'confirmed');
+  assert.equal(f.session.state.reconciliationExhausted, false);
+});
+
+test('background reads coalesce while a foreground action waits and rechecks the newest status', async () => {
+  const f = fixture(); await f.connect(); await f.session.deposit('7');
+  f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'awaiting_chain_signature', statusRevision: '2' });
+  await f.session.refresh();
+  let resolve, reads = 0;
+  f.client.getOperation = () => { reads++; return new Promise(done => { resolve = done; }); };
+  const poll = f.session.poll(), duplicate = f.session.poll();
+  assert.equal(f.session.state.busy, false, 'background status read is not a user action');
+  const submit = f.session.submit();
+  assert.equal(f.session.state.busy, true);
+  resolve({ operationId: 'deposit', kind: 'deposit', state: 'confirmed', statusRevision: '3' });
+  await Promise.all([poll, duplicate]);
+  await assert.rejects(submit, /서명 준비/);
+  assert.equal(reads, 1);
+  assert.equal(f.calls.filter(([name]) => name === 'submit').length, 0, 'a click cannot dispatch against stale state');
+});
+
+test('background confirmation fences invalidated replies and never reconciles missing attempts or approval work', async () => {
+  for (const state of ['awaiting_approval', 'awaiting_chain_signature', 'submission_unknown']) {
+    const f = fixture(); await f.connect(); await f.session.deposit('7');
+    f.setOperation({ operationId: 'deposit', kind: 'deposit', state }); await f.session.poll();
+    assert.equal(f.calls.some(([name]) => name === 'reconcile'), false);
+  }
+  const f = fixture(); await f.connect(); await f.session.deposit('7');
+  let resolve;
+  f.client.getOperation = () => new Promise(done => { resolve = done; });
+  const poll = f.session.poll(); f.provider.invalidate();
+  resolve({ operationId: 'deposit', kind: 'deposit', state: 'submission_unknown', submissionAttempt: { attemptId: 'attempt' } });
+  await assert.rejects(poll);
+  assert.equal(f.session.state.invalidated, true);
+  assert.equal(f.session.state.operation.state, 'awaiting_approval');
+  assert.equal(f.calls.some(([name]) => name === 'reconcile'), false);
 });
 
 test('CC-004 locked vault is explained after read-only discovery without new authorization', async () => {
@@ -497,6 +559,35 @@ test('invalid recovery IDs never dispatch or fence a corrected connection reques
     assert.equal(f.calls.length, 1);
     assert.deepEqual(f.session.state.connection.recoveryAccess.operationIds, ['A'.repeat(43)]);
   }
+});
+
+test('automatic recovery inspection stays within the newly approved operation and has no signing authority', async () => {
+  const f = fullFixture(), id = 'A'.repeat(43);
+  await f.session.connectWallet(); await f.session.connectCustody({ recoveryOperationIds: [id] }); await f.session.refresh();
+  f.setOperation({ operationId: id, kind: 'deposit', state: 'submission_unknown', statusRevision: '5',
+    accessMode: 'recovery-only', submissionAttempt: { attemptId: 'attempt', state: 'unresolved' } });
+  await f.session.inspectRecovery(id); await f.session.poll();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 1);
+  assert.equal(f.calls.at(-1)[1].operationId, id);
+  assert.equal(custodyActions(f.session.state).deposit, false);
+  assert.equal(custodyActions(f.session.state).submit, false);
+  f.provider.invalidate(); await f.session.poll();
+  assert.equal(f.calls.filter(([name]) => name === 'reconcile').length, 1);
+});
+
+test('lost reconciliation responses consume the automatic budget and never release submission barriers', async () => {
+  let time = 0, requests = 0;
+  const f = fixture({ now: () => time, client: { reconcile: async () => { requests++; throw new Error('Lost inspection acknowledgement'); } } });
+  await f.connect(); await f.session.deposit('7');
+  f.setOperation({ operationId: 'deposit', kind: 'deposit', state: 'submission_unknown', statusRevision: '3',
+    submissionAttempt: { attemptId: 'attempt', state: 'unresolved' } });
+  for (let i = 0; i < 6; i++) { await assert.rejects(f.session.poll()); time += 30000; }
+  await f.session.poll();
+  assert.equal(requests, 6);
+  assert.equal(f.session.state.reconciliationExhausted, true);
+  assert.equal(canResetCustodySession(f.session.state), false);
+  assert.equal(custodyActions(f.session.state).submit, false);
+  assert.equal(f.session.state.operation.state, 'submission_unknown');
 });
 
 test('a recovery connection error after dispatch retains its unknown-request fence', async () => {

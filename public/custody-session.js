@@ -13,11 +13,13 @@ const canonical = value => JSON.stringify(value, function (_key, item) {
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item;
 });
 
-export function createCustodySession({ client, provider, wallet, profile, onChange = () => {} }) {
+export function createCustodySession({ client, provider, wallet, profile, onChange = () => {}, now = () => performance.now() }) {
   const state = { actor: null, capabilities: null, connection: null, connectionUnavailable: false, operation: null, busy: false,
-    invalidated: false, uncertain: false, submissionAttempted: false, balances: null, publicAccount: null, activeOperation: null, withdrawalPreparation: null, recoveryRequired: false, error: '' };
+    invalidated: false, uncertain: false, submissionAttempted: false, balances: null, publicAccount: null, activeOperation: null, withdrawalPreparation: null, recoveryRequired: false, reconciliationExhausted: false, error: '' };
   let revision = 0, disposed = false, requestedPermissions = [], recoveryAccess, connectionOperationId;
   const snapshots = new Map(), submitted = new Set();
+  const chainChecks = new Map();
+  let backgroundRefresh;
   const notify = () => onChange({ ...state });
   const context = () => {
     if (!state.connection) throw new Error('커스터디 연결 승인이 필요합니다.');
@@ -37,11 +39,17 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
     state.error = '연결이 만료되었거나 지갑이 변경되었습니다. 새 서명을 중단했습니다. 미확정 작업을 다시 제출하지 마세요.'; notify();
   };
   const unsubscribe = provider.onInvalidation(invalidate);
-  async function run(work, { disconnecting = false } = {}) {
+  async function run(work, { disconnecting = false, background = false } = {}) {
     if (state.busy) throw new Error('이전 요청을 처리 중입니다.');
     current(revision); const stamp = revision;
-    state.busy = true; state.error = ''; notify();
-    try { const result = await work(() => current(stamp)); if (!disconnecting) current(stamp); return result; }
+    if (!background) { state.busy = true; state.error = ''; notify(); }
+    try {
+      // A user action waits for the current read, then checks fresh state before
+      // it can sign or mutate. Background reads never toggle the action buttons.
+      if (!background && backgroundRefresh) await backgroundRefresh.catch(() => {});
+      current(stamp);
+      const result = await work(() => current(stamp)); if (!disconnecting) current(stamp); return result;
+    }
     catch (error) {
       if (state.connection && [4103, 4104].includes(error?.code)) provider.invalidate();
       state.error = state.connectionUnavailable
@@ -58,7 +66,7 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
       if (error?.code === 4105) state.recoveryRequired = true;
       throw error;
     }
-    finally { state.busy = false; notify(); }
+    finally { if (!background) state.busy = false; notify(); }
   }
   async function checkActor(check) {
     const actor = await wallet.getActor(); check();
@@ -78,7 +86,7 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
   }
   function accepted(value, kind) {
     state.uncertain = false; state.operation = { ...value, kind }; state.activeOperation = null; state.submissionAttempted = false;
-    state.withdrawalPreparation = null; state.connectionUnavailable = false;
+    state.withdrawalPreparation = null; state.connectionUnavailable = false; state.reconciliationExhausted = false;
     if (kind === 'connect') connectionOperationId = value.operationId;
   }
   function applySnapshot(value, id) {
@@ -123,6 +131,44 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
       withdrawOperationId: result.operationId, amountBaseUnits: amount, recipientAddress: protocol.recipientAddress
     };
   }
+  async function refreshOperation(check) {
+    if (!state.operation) return;
+    if (state.connectionUnavailable) throw new Error('새 연결 요청이 필요합니다.');
+    const id = state.operation.operationId;
+    let value;
+    try {
+      value = await client.getOperation({ ...base, ...(state.operation.kind === 'connect' ? {} : context()), operationId: id });
+    } catch (error) {
+      check();
+      // This is a rejected lookup of a known consent request, never a lost
+      // mutation reply or a chain operation. Preserve the host snapshot.
+      if (error?.code === 4103 && state.operation.kind === 'connect' && !state.connection && !state.uncertain
+        && !state.submissionAttempted && !state.operation.publicArtifact && !state.operation.submissionAttempt) state.connectionUnavailable = true;
+      throw error;
+    }
+    check(); const op = applySnapshot(value, id);
+    if (op.kind === 'connect' && op.state === 'completed') {
+      if (canonical([...requestedPermissions].sort()) !== canonical([...(op.connection?.permissions ?? [])].sort())
+        || (!recoveryAccess && !op.connection.chainActors.some(actor => actor.accountId === accountId()))
+        || canonical(op.connection.recoveryAccess) !== canonical(recoveryAccess)) throw new Error('승인된 일반 지갑 또는 권한이 요청과 다릅니다.');
+      state.connection = op.connection;
+    }
+    state.operation = op; state.activeOperation = null;
+    if (op.kind === 'transfer') {
+      const step = op.steps?.find(item => !['confirmed', 'cancelled'].includes(item.state)) || op.steps?.at(-1);
+      if (step && (!state.connection.recoveryAccess || state.connection.recoveryAccess.operationIds.includes(step.operationId))) {
+        value = await client.getOperation({ ...base, ...context(), operationId: step.operationId });
+        check(); const child = applySnapshot(value, step.operationId);
+        if (child.parentOperationId !== op.operationId) throw new Error('전송 단계의 상위 작업이 다릅니다.');
+        state.activeOperation = child;
+      }
+    }
+    state.submissionAttempted = submitted.has(selected()?.operationId);
+    if (['confirmed', 'completed'].includes(selected()?.state)) {
+      state.reconciliationExhausted = false; state.error = '';
+    }
+    return value;
+  }
   return {
     get state() { return { ...state }; },
     connectWallet: () => run(async check => {
@@ -150,40 +196,31 @@ export function createCustodySession({ client, provider, wallet, profile, onChan
       const result = await client.connect(params);
       check(); accepted(result, 'connect');
     }),
-    refresh: () => run(async check => {
-      if (!state.operation) return;
-      if (state.connectionUnavailable) throw new Error('새 연결 요청이 필요합니다.');
-      const id = state.operation.operationId;
-      let value;
-      try {
-        value = await client.getOperation({ ...base, ...(state.operation.kind === 'connect' ? {} : context()), operationId: id });
-      } catch (error) {
+    refresh: () => run(refreshOperation),
+    poll() {
+      if (backgroundRefresh) return backgroundRefresh;
+      if (state.busy || disposed || state.invalidated || !custodyActions(state).poll) return Promise.resolve();
+      backgroundRefresh = run(async check => {
+        const observed = await refreshOperation(check);
+        const operation = selected();
+        // Only an existing durable attempt can cause automatic chain inspection.
+        // A queued user action takes priority; no signer or beginSubmission here.
+        if (state.busy || !custodyActions(state).reconcile || !operation?.submissionAttempt
+          || observed?.operationId !== operation.operationId || observed?.statusRevision !== operation.statusRevision
+          || observed.jobState === 'running') return;
+        if (state.connection?.recoveryAccess && !state.connection.recoveryAccess.methods.includes('clairveil_reconcile')) return;
+        const previous = chainChecks.get(operation.operationId) || { count: 0, next: 0 };
+        state.reconciliationExhausted = previous.count >= 6;
+        if (state.reconciliationExhausted || now() < previous.next) return;
+        // Charge before dispatch, including lost/error replies. Retry inspection
+        // with backoff, never the wallet call. Manual reconciliation remains usable.
+        const count = previous.count + 1;
+        chainChecks.set(operation.operationId, { count, next: now() + Math.min(30000, 5000 * 2 ** (count - 1)) });
+        await client.reconcile({ ...base, ...context(), operationId: operation.operationId, idempotencyKey: handle() });
         check();
-        // This is a rejected lookup of a known consent request, never a lost
-        // mutation reply or a chain operation. Preserve the host snapshot.
-        if (error?.code === 4103 && state.operation.kind === 'connect' && !state.connection && !state.uncertain
-          && !state.submissionAttempted && !state.operation.publicArtifact && !state.operation.submissionAttempt) state.connectionUnavailable = true;
-        throw error;
-      }
-      check(); const op = applySnapshot(value, id);
-      if (op.kind === 'connect' && op.state === 'completed') {
-        if (canonical([...requestedPermissions].sort()) !== canonical([...(op.connection?.permissions ?? [])].sort())
-          || (!recoveryAccess && !op.connection.chainActors.some(actor => actor.accountId === accountId()))
-          || canonical(op.connection.recoveryAccess) !== canonical(recoveryAccess)) throw new Error('승인된 일반 지갑 또는 권한이 요청과 다릅니다.');
-        state.connection = op.connection;
-      }
-      state.operation = op; state.activeOperation = null;
-      if (op.kind === 'transfer') {
-        const step = op.steps?.find(item => !['confirmed', 'cancelled'].includes(item.state)) || op.steps?.at(-1);
-        if (step && (!state.connection.recoveryAccess || state.connection.recoveryAccess.operationIds.includes(step.operationId))) {
-          const value = await client.getOperation({ ...base, ...context(), operationId: step.operationId });
-          check(); const child = applySnapshot(value, step.operationId);
-          if (child.parentOperationId !== op.operationId) throw new Error('전송 단계의 상위 작업이 다릅니다.');
-          state.activeOperation = child;
-        }
-      }
-      state.submissionAttempted = submitted.has(selected()?.operationId);
-    }),
+      }, { background: true }).finally(() => { backgroundRefresh = undefined; });
+      return backgroundRefresh;
+    },
     publicAccount: () => run(async check => {
       if (!state.connection?.permissions.includes('account.read')) throw new Error('공개 계정 조회 권한이 필요합니다.');
       state.publicAccount = null;

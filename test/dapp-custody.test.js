@@ -1039,6 +1039,43 @@ test('waiting for the workbench blocks double clicks and fences a late open afte
   assert.equal(runtime.calls.length, 0, 'late presentation never creates a custody request');
 });
 
+test('automatic operation reads keep action buttons stable while pending and unchanged', async t => {
+  const f = await mount(t, { pollMs: 10 }); await f.connect(); await f.app.runtime.session.deposit('1');
+  const operation = { operationId: 'deposit', kind: 'deposit', state: 'awaiting_chain_signature', statusRevision: '2' };
+  f.app.runtime.setOperation(operation); await f.app.runtime.session.refresh();
+  const buttons = ['custodySubmit', 'custodyRefresh', 'custodyCancel'].map(f.$);
+  const states = buttons.map(button => button.disabled);
+  const mutations = [], observer = new f.dom.window.MutationObserver(values => mutations.push(...values));
+  buttons.forEach(button => observer.observe(button, { attributes: true, attributeFilter: ['disabled'] }));
+  t.after(() => observer.disconnect());
+  let resolve, reads = 0;
+  f.app.runtime.client.getOperation = () => { reads++; return new Promise(done => { resolve = done; }); };
+  await new Promise(done => setTimeout(done, 35));
+  assert.equal(reads, 1, 'in-flight background reads coalesce');
+  assert.deepEqual(buttons.map(button => button.disabled), states);
+  resolve(operation); await tick();
+  assert.deepEqual(buttons.map(button => button.disabled), states);
+  assert.equal(mutations.length, 0, 'unchanged polling does not rewrite disabled attributes');
+});
+
+test('automatic custody confirmation reaches confirmed after hashless submission without another signature', async t => {
+  const f = await mount(t, { pollMs: 10 }); await f.connect(); await f.app.runtime.session.deposit('1');
+  const pending = { operationId: 'deposit', kind: 'deposit', state: 'submission_unknown', statusRevision: '3',
+    submissionAttempt: { attemptId: 'attempt', state: 'unresolved' }, jobState: 'queued' };
+  const runtime = f.app.runtime, before = runtime.presentations;
+  runtime.setOperation(pending);
+  runtime.client.reconcile = async () => {
+    runtime.calls.push(['reconcile']);
+    runtime.setOperation({ ...pending, state: 'confirmed', statusRevision: '4', transactionHash: 'a'.repeat(64) });
+  };
+  await new Promise(done => setTimeout(done, 70));
+  assert.match(f.$('keplrDepositStage').textContent, /confirmed/i);
+  assert.equal(f.$('keplrDepositHash').textContent, 'a'.repeat(64));
+  assert.equal(runtime.calls.filter(([name]) => name === 'reconcile').length, 1);
+  assert.equal(runtime.calls.filter(([name]) => name === 'submit').length, 0);
+  assert.equal(runtime.presentations, before, 'background confirmation never steals focus');
+});
+
 test('unavailable custody window leaves the action retryable without dispatching or inventing an operation', async t => {
   const f = await mount(t); await f.click('connectKeplr');
   f.app.runtime.present = async () => { throw new Error('Extension unavailable'); };
