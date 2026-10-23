@@ -20,7 +20,7 @@ export function DappView({ custody = false }) {
 
         <PrivacyEvents custody={custody} />
 
-        {!custody && <LocalSigner />}
+        <LocalSigner custody={custody} />
       </section>
 
       {!custody && <AuditorPanel />}
@@ -665,18 +665,22 @@ function PrivacyEvents({ custody }) {
   );
 }
 
-function LocalSigner() {
+function LocalSigner({ custody = false }) {
   return (
-    <div className="panel account-panel local-signer-panel">
+    <div id="localSignerPanel" className="panel account-panel local-signer-panel" hidden={custody}>
           <div className="panel-heading">
             <h2>Local Signer</h2>
             <button id="refreshAll" type="button">Refresh</button>
           </div>
-          <div className="local-signer-layout">
+          {custody && <>
+            <p className="quiet">Local test accounts · selecting an account here does not change your connected wallet or custody account.</p>
+            <p id="localSignerStatus" className="quiet" role="status" aria-live="polite" hidden />
+          </>}
+          <div className={custody ? 'local-signer-public' : 'local-signer-layout'}>
             <div className="local-signer-details">
               <label className="field">
                 <span>Test key</span>
-                <select id="accountSelect"></select>
+                <select id="accountSelect" disabled={custody}></select>
               </label>
               <dl className="facts">
                 <div>
@@ -684,7 +688,7 @@ function LocalSigner() {
                   <dd id="transparentAddress">-</dd>
                 </div>
                 <div>
-                  <dt>Shielded</dt>
+                  <dt>{custody ? 'Test shielded address' : 'Shielded'}</dt>
                   <dd id="shieldedAddress">-</dd>
                 </div>
                 <div>
@@ -693,7 +697,7 @@ function LocalSigner() {
                 </div>
               </dl>
             </div>
-            <section className="local-signer-notes" aria-labelledby="localSignerNotesTitle">
+            {!custody && <section className="local-signer-notes" aria-labelledby="localSignerNotesTitle">
               <div className="panel-heading">
                 <h3 id="localSignerNotesTitle">Notes</h3>
                 <button id="refreshNotes" type="button">Scan</button>
@@ -703,7 +707,7 @@ function LocalSigner() {
                 <strong id="spendableTotal">-</strong>
               </div>
               <div id="notesList" className="notes-list"></div>
-            </section>
+            </section>}
           </div>
         </div>
   );

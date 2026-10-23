@@ -1637,32 +1637,35 @@ async function localAccounts({ signal } = {}) {
     return [];
   }
 
-  if (isEvmTransport()) {
-    try {
-      const result = await runLocalSigner([
-        "keys", "list",
-        "--keyring-backend", localSignerKeyring(),
-        "--home", localSignerHome(),
-        "--output", "json"
-      ], { signal });
-      const allowed = localSignerNames();
-      return (Array.isArray(result.json) ? result.json : [])
-        .filter(account => allowed.has(account.name) && account.address)
-        .map(account => ({
-          name: account.name,
-          transparentAddress: account.address
-        }));
-    } catch {
-      return [];
-    }
+  if (!isEvmTransport()) {
+    const out = join(config.home, "init-out");
+    const entries = await Promise.all([...cosmosAccountNames].map(async name => ({
+      name,
+      transparentAddress: await readTextIfExists(join(out, `${name}-address.txt`))
+    })));
+    const accounts = entries.filter(entry => entry.transparentAddress);
+    if (accounts.length) return accounts;
   }
 
-  const out = join(config.home, "init-out");
-  const entries = await Promise.all([...cosmosAccountNames].map(async name => ({
-    name,
-    transparentAddress: await readTextIfExists(join(out, `${name}-address.txt`))
-  })));
-  return entries.filter(entry => entry.transparentAddress);
+  // Existing test homes need not contain the runner's init-out files. Read only
+  // the allowlisted public identities from their keyring; never create keys here.
+  try {
+    const result = await runLocalSigner([
+      "keys", "list",
+      "--keyring-backend", localSignerKeyring(),
+      "--home", localSignerHome(),
+      "--output", "json"
+    ], { signal });
+    const allowed = localSignerNames();
+    return (Array.isArray(result.json) ? result.json : [])
+      .filter(account => allowed.has(account.name) && account.address)
+      .map(account => ({
+        name: account.name,
+        transparentAddress: account.address
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function validateAccount(value) {

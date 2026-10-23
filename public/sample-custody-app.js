@@ -2,6 +2,7 @@ import { custodyActions, canResetCustodySession, exactWithdrawNoteRequired } fro
 import { fetchBoundedJson } from './bounded-json-fetch.js';
 import { normalizeDisclosureHash, resolveDisclosureTransactionHash } from './sample-event-disclosure.js';
 import { faucetMatchesProfile, requestSampleFaucet } from './sample-faucet.js';
+import { createLocalSignerPanel } from './sample-local-signers.js';
 
 const statusLabels = { awaiting_approval: 'Custody approval pending', preparing: 'Preparing proof in custody',
   awaiting_chain_signature: 'Ready for explicit chain-wallet signature', submitted: 'Submitted; chain confirmation pending',
@@ -14,6 +15,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   chainActions, fetchJson = fetchBoundedJson, pollMs = 1700 } = {}) {
   const $ = id => document.getElementById(id);
   const listeners = [];
+  const localSigners = createLocalSignerPanel({ document, fetchJson });
   let profiles, profile, runtime, generation = 0, alive = true, timer, localError = '', publicBusy = false;
   let sendRecord = null, publicController;
   let serverConfig = null, faucetRecord = null;
@@ -251,6 +253,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     text('localHome', 'Privacy vault and backup in extension'); text('keplrSignerCheck', 'Ordinary signing is separate from custody approval');
     document.querySelectorAll('.denom').forEach(node => { node.textContent = profile.denom; });
     render();
+    return localSigners.setProfile(profile, serverConfig);
   }
   async function connectWallet(r) {
     await r.connectWallet();
@@ -499,7 +502,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
   }, { allowPending: true })));
   const stop = () => {
     if (!alive) return;
-    alive = false; generation++; publicController?.abort(); disclosureLookup?.abort(); eventsController?.abort(); clearInterval(timer); runtime?.dispose(); listeners.forEach(remove => remove());
+    alive = false; generation++; publicController?.abort(); disclosureLookup?.abort(); eventsController?.abort(); clearInterval(timer); runtime?.dispose(); localSigners.dispose(); listeners.forEach(remove => remove());
     browser.removeEventListener('pagehide', stop);
     document.querySelectorAll('button').forEach(button => { button.disabled = true; });
   };
@@ -512,7 +515,7 @@ export function startSampleCustody({ createRuntime, browser = window, document =
     for (const [id, item] of Object.entries(profiles)) {
       const option = document.createElement('option'); option.value = id; option.textContent = `${item.transport === 'cosmos' ? 'Cosmos · Keplr' : 'EVM · MetaMask'} · ${item.chainId}`; $('dappChainSelect').append(option);
     }
-    selectProfile('cosmos');
+    return selectProfile('cosmos');
   }).catch(() => { if (alive) error('Cannot load the custody profiles. Build the sample with the prepared sibling custody host.'); });
   return { ready, dispose: stop, get runtime() { return runtime; } };
 }

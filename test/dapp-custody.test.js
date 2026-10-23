@@ -82,12 +82,114 @@ test('main sample keeps Wallet Session / Clair / Veiled and removes standalone/p
   const f = await mount(t);
   const markup = f.dom.window.document.body.innerHTML;
   for (const label of ['Wallet Session', 'Clair', 'Veiled', 'Privacy Events']) assert.ok(markup.includes(label));
-  assert.doesNotMatch(markup, /Custody-Test-Web|\/custody"|Relay Withdraw|Pasted disclosure event JSON|Backup cache|Local Signer/);
+  assert.doesNotMatch(markup, /Custody-Test-Web|\/custody"|Relay Withdraw|Pasted disclosure event JSON|Backup cache/);
+  assert.equal(f.$('localSignerPanel')?.hidden, true, 'test accounts stay hidden without local admin capability');
+  assert.equal(f.$('notesList'), null, 'the custody screen never restores the legacy raw-note interface');
   assert.equal(f.$('depositFromKeplr').disabled, true);
   assert.deepEqual(f.app.runtime.calls, [], 'mount never requests consent or signing');
   const entry = await readFile(new URL('../public/dapp-entry.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(entry, /import\('\.\/app.js'\)|CustodyApp/);
   assert.match(entry, /DappView custody/);
+});
+
+const localSignerConfig = network => ({ ...profiles[network], localTestMode: true,
+  serverFeatures: { localSigners: true, localSignerAdmin: true } });
+const localTestAccounts = [
+  { name: 'alice', transparentAddress: 'synthetic-public-alice' },
+  { name: 'bob', transparentAddress: 'synthetic-public-bob' }
+];
+function localSignerReads(configuration, requests = []) {
+  return async (url, options) => {
+    requests.push([url, options]);
+    if (url === '/api/health') return { config: configuration, accounts: localTestAccounts };
+    if (url.includes('/show-address')) return { address: url.includes('/alice/') ? 'synthetic-shielded-alice' : 'synthetic-shielded-bob' };
+    if (url.includes('/balances/')) return { balance: { denom: configuration.denom, amount: url.includes('alice') ? '123' : '456' } };
+    throw new Error(`Unexpected test account request: ${url}`);
+  };
+}
+
+test('local test accounts expose public addresses and balances without connecting or signing', async t => {
+  const configuration = localSignerConfig('cosmos'), requests = [];
+  const f = await mount(t, { loadServerConfig: async () => configuration, fetchJson: localSignerReads(configuration, requests) });
+  assert.equal(f.$('localSignerPanel')?.hidden, false);
+  assert.deepEqual([...f.$('accountSelect').options].map(option => option.value), ['alice', 'bob']);
+  assert.equal(f.$('transparentAddress').textContent, 'synthetic-public-alice');
+  assert.equal(f.$('shieldedAddress').textContent, 'synthetic-shielded-alice');
+  assert.equal(f.$('balanceValue').textContent, '123 uclair');
+  change(f, 'accountSelect', 'bob'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.$('transparentAddress').textContent, 'synthetic-public-bob');
+  assert.equal(f.$('shieldedAddress').textContent, 'synthetic-shielded-bob');
+  assert.equal(f.$('balanceValue').textContent, '456 uclair');
+  await f.click('refreshAll');
+  assert.equal(f.$('accountSelect').value, 'bob', 'refresh preserves the selected test account');
+  assert.equal(f.$('walletAccount').textContent, 'Not connected');
+  assert.deepEqual(f.app.runtime.calls, []);
+  assert.equal(f.app.runtime.presentations, 0);
+  assert.ok(requests.every(([url, options]) => !/notes|ensure|scalar|faucet/.test(url) && !options?.method));
+});
+
+test('local account reads are gated by local admin access and matching chain configuration', async t => {
+  for (const configuration of [
+    { ...localSignerConfig('cosmos'), localTestMode: false },
+    { ...localSignerConfig('cosmos'), serverFeatures: { localSigners: true, localSignerAdmin: false } },
+    { ...localSignerConfig('cosmos'), chainId: 'different-chain' },
+    { ...localSignerConfig('cosmos'), denom: 'different-denom' }
+  ]) {
+    const requests = [];
+    const f = await mount(t, { loadServerConfig: async () => configuration, fetchJson: localSignerReads(configuration, requests) });
+    assert.deepEqual(requests, []);
+    assert.equal(f.$('accountSelect')?.disabled, true);
+    assert.equal(f.$('balanceValue')?.textContent, '—');
+  }
+});
+
+test('test account balance failures stay unknown and a manual refresh recovers them', async t => {
+  const configuration = localSignerConfig('cosmos');
+  let fail = true;
+  const read = localSignerReads(configuration);
+  const f = await mount(t, { loadServerConfig: async () => configuration,
+    fetchJson: (url, options) => url.includes('/balances/') && fail ? Promise.reject(new Error('Chain unavailable')) : read(url, options) });
+  assert.equal(f.$('balanceValue')?.textContent, 'Unknown');
+  assert.match(f.$('localSignerStatus')?.textContent || '', /unable|unavailable|failed/i);
+  assert.equal(f.$('refreshAll').disabled, false);
+  fail = false; await f.click('refreshAll');
+  assert.equal(f.$('balanceValue').textContent, '123 uclair');
+  assert.equal(f.$('localSignerStatus').hidden, true);
+});
+
+test('late test account replies cannot overwrite a new account or network selection', async t => {
+  const configuration = localSignerConfig('cosmos');
+  const read = localSignerReads(configuration), delayed = [];
+  let hold = false;
+  const f = await mount(t, { loadServerConfig: async () => configuration, fetchJson: (url, options) =>
+    hold && url !== '/api/health' ? new Promise(resolve => delayed.push(() => resolve(read(url, options)))) : read(url, options) });
+  hold = true;
+  change(f, 'accountSelect', 'bob');
+  hold = false;
+  change(f, 'accountSelect', 'alice'); await new Promise(resolve => setImmediate(resolve));
+  delayed.splice(0).forEach(resolve => resolve()); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.$('balanceValue')?.textContent, '123 uclair');
+  assert.equal(f.$('shieldedAddress')?.textContent, 'synthetic-shielded-alice');
+  hold = true; await f.click('refreshAll');
+  change(f, 'dappChainSelect', 'evm');
+  delayed.splice(0).forEach(resolve => resolve()); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.$('accountSelect').options.length, 0);
+  assert.equal(f.$('balanceValue').textContent, '—');
+  assert.equal(f.$('shieldedAddress').textContent, '—');
+});
+
+test('EVM local test accounts use the selected chain read proxy without requesting MetaMask', async t => {
+  const configuration = localSignerConfig('evm'), requests = [];
+  const f = await mount(t, { loadServerConfig: async () => configuration, fetchJson: localSignerReads(configuration, requests) });
+  assert.deepEqual(requests, []);
+  change(f, 'dappChainSelect', 'evm'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.$('balanceValue')?.textContent, '123 aokrw');
+  assert.ok(requests.some(([url]) => url.startsWith('/evm-rest/cosmos/bank/')));
+  assert.deepEqual(f.app.runtime.calls, []);
+  const wrongChain = { ...configuration, evmChainId: '0x999' };
+  const wrong = await mount(t, { loadServerConfig: async () => wrongChain, fetchJson: localSignerReads(wrongChain, requests) });
+  requests.length = 0; change(wrong, 'dappChainSelect', 'evm'); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, []);
 });
 
 test('an explicit connection click registers the network, connects its wallet and requests site consent', async t => {
